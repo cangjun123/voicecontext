@@ -1,0 +1,7 @@
+PySide6>=6.6
+httpx>=0.27
+sounddevice>=0.4.7
+keyboard>=0.13.5; platform_system == "Windows"
+mouse>=0.7.1; platform_system == "Windows"
+keyring>=24
+dashscope>=1.26.3

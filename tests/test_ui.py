@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+
+from voice_context.core.session import SessionState, VoiceSession
+from voice_context.input.hotkeys import HotkeyManager
+from voice_context.storage.config_store import ConfigStore
+from voice_context.ui.hotkey_capture import HotkeyCaptureEdit
+from voice_context.ui.main_window import MainWindow
+from voice_context.ui.i18n import set_language
+from voice_context.ui.settings_window import SettingsWindow
+
+
+class MemorySecrets:
+    def __init__(self) -> None:
+        self.values = {}
+
+    def get(self, name: str) -> str:
+        return self.values.get(name, "")
+
+    def set(self, name: str, value: str) -> None:
+        self.values[name] = value
+
+
+def test_main_window_renders_session(qtbot) -> None:
+    set_language("en")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    session = VoiceSession()
+    session.transition(SessionState.LISTENING)
+    session.add_speech("test speech", 0, 100)
+    session.add_reference("Error: test", content_type="error")
+    window.set_session(session)
+    assert window.transcript_edit.toPlainText() == "test speech"
+    assert window.ref_count.text() == "1 captured"
+    assert window.stop_button.isVisible() is False  # Parent window is not shown in the test.
+    assert window.stop_button.isHidden() is False
+
+
+def test_main_window_shows_actual_llm_model_and_fallback(qtbot) -> None:
+    set_language("en")
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.set_composer_status(
+        {
+            "requested": True,
+            "used": True,
+            "model": "configured-model",
+            "response_model": "actual-model",
+            "latency_ms": 321,
+            "usage": {"prompt_tokens": 120, "completion_tokens": 34},
+            "streamed": True,
+        }
+    )
+    assert window.context_label.text() == (
+        "Prompt ready via streaming LLM: actual-model (321 ms) · Tokens: 120 in / 34 out"
+    )
+
+    window.set_composer_status({"requested": True, "used": False}, "timed out")
+    assert window.context_label.text() == "LLM failed; rule composer was used"
+    assert window.context_label.toolTip() == "timed out"
+
+
+def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
+    set_language("en")
+    config = ConfigStore(tmp_path / "config.json")
+    window = SettingsWindow(config, MemorySecrets())
+    qtbot.addWidget(window)
+    assert window.pages.count() == 9
+    assert [window.nav.item(index).text() for index in range(window.nav.count())] == [
+        "General", "Hotkeys", "ASR", "LLM", "Prompt", "Clipboard", "Output", "Privacy", "Advanced"
+    ]
+    assert isinstance(window.hotkey_edits["toggle_listening"], HotkeyCaptureEdit)
+
+
+def test_hotkey_capture_records_pressed_combination(qtbot) -> None:
+    edit = HotkeyCaptureEdit("ctrl+alt+v")
+    qtbot.addWidget(edit)
+    edit.show()
+    qtbot.mouseClick(edit, Qt.MouseButton.LeftButton)
+    qtbot.keyClick(
+        edit,
+        Qt.Key.Key_K,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    assert edit.text() == "ctrl+shift+k"
+
+
+def test_hotkey_capture_escape_cancels_and_delete_clears(qtbot) -> None:
+    edit = HotkeyCaptureEdit("ctrl+alt+v")
+    qtbot.addWidget(edit)
+    edit.show()
+    qtbot.mouseClick(edit, Qt.MouseButton.LeftButton)
+    qtbot.keyClick(edit, Qt.Key.Key_Escape)
+    assert edit.text() == "ctrl+alt+v"
+
+    qtbot.mouseClick(edit, Qt.MouseButton.LeftButton)
+    qtbot.keyClick(edit, Qt.Key.Key_Delete)
+    assert edit.text() == ""
+
+
+def test_hotkey_capture_records_mouse_side_button(qtbot) -> None:
+    edit = HotkeyCaptureEdit()
+    qtbot.addWidget(edit)
+    edit.show()
+    qtbot.mouseClick(
+        edit,
+        Qt.MouseButton.BackButton,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    assert edit.text() == "ctrl+mouse4"
+
+
+def test_hotkey_normalizes_qt_special_key_names() -> None:
+    assert HotkeyManager.normalize("Ctrl+Meta+PgUp") == "ctrl+windows+page up"
+
+
+def test_simplified_chinese_translation(qtbot) -> None:
+    set_language("zh_CN")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.workspace_nav.text() == "工作台"
+    assert window.start_button.text() == "开始"
+    set_language("en")
