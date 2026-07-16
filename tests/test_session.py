@@ -57,12 +57,16 @@ def test_reference_privacy_redacts_prompt_and_event_content() -> None:
     session = VoiceSession()
     session.add_reference("TOP SECRET", content_type="text")
     session.final_prompt = "Reference:\nTOP SECRET"
+    session.asr_metadata = {"status": "success", "provider": "aliyun_realtime"}
     session.composer_metadata = {"requested": True, "used": True, "request_id": "request-1"}
+    session.output_metadata = {"clipboard_verified": True, "attempts": 1}
     data = session.to_dict(include_reference_content=False)
     assert "TOP SECRET" not in data["finalPrompt"]
     reference = next(event for event in data["events"] if event["type"] == "reference")
     assert "content" not in reference
     assert data["composer"] == {"requested": True, "used": True, "request_id": "request-1"}
+    assert data["asr"]["provider"] == "aliyun_realtime"
+    assert data["output"] == {"clipboard_verified": True, "attempts": 1}
 
 
 def test_generic_event_uses_camel_case_timestamp() -> None:

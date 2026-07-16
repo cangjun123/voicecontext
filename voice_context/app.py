@@ -8,6 +8,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,7 +25,7 @@ from voice_context.input.clipboard_watcher import ClipboardWatcher
 from voice_context.input.foreground import ForegroundInfo, activate_window, get_foreground_info
 from voice_context.input.hotkeys import HotkeyManager
 from voice_context.llm import LLMComposerClient, LLMError
-from voice_context.output.dispatcher import OutputDispatcher
+from voice_context.output.dispatcher import ClipboardWriteResult, OutputDispatcher
 from voice_context.platform.startup import set_startup
 from voice_context.storage.config_store import APP_DIR, ConfigStore
 from voice_context.storage.secrets import SecretStore
@@ -38,6 +39,14 @@ from voice_context.ui.tray import TrayIcon, create_tray_icon
 
 
 LOG = logging.getLogger("voice_context")
+
+
+@dataclass(slots=True)
+class PromptComposeResult:
+    prompt: str
+    warning: str
+    metadata: dict[str, Any]
+    error: str = ""
 
 
 class TaskSignals(QObject):
@@ -156,6 +165,7 @@ class VoiceContextController(QObject):
         self.main.reference_update_requested.connect(self.update_reference)
         self.main.history_selected.connect(self._load_history_prompt)
         self.main.history_delete_requested.connect(self._delete_history)
+        self.overlay.edit_requested.connect(self._edit_prompt_from_overlay)
 
         self.tray.start_requested.connect(self.start_session)
         self.tray.finish_requested.connect(self.finish_session)
@@ -216,6 +226,14 @@ class VoiceContextController(QObject):
             mime.html() if mime is not None and mime.hasHtml() else "",
         )
         self._session = VoiceSession(source_app=self._target_window.process)
+        asr_config = self.config.section("asr")
+        self._session.asr_metadata = {
+            "status": "listening",
+            "provider": str(asr_config.get("provider", "")),
+            "model": str(asr_config.get("model", "")),
+            "streaming": self._uses_realtime_asr(),
+            "segment_count": 0,
+        }
         self._original_clipboard_session_id = self._session.id
         self._pending_segments = 0
         self._compose_when_ready = False
@@ -238,8 +256,7 @@ class VoiceContextController(QObject):
         self.elapsed_timer.start()
         self.main.set_session(self._session)
         self._update_state_ui()
-        self.overlay.set_references([])
-        self.overlay.set_transcript("")
+        self.overlay.set_session_timeline(self._session)
         self.overlay.set_state("Listening")
 
     def _start_audio(self) -> None:
@@ -298,7 +315,7 @@ class VoiceContextController(QObject):
             return
         self._session.set_partial(text)
         self.main.update_transcript(self._session.transcript)
-        self.overlay.set_transcript(self._session.transcript)
+        self.overlay.set_session_timeline(self._session)
 
     def _realtime_error(
         self, engine: AliyunRealtimeASR, session_id: str, message: str
@@ -351,7 +368,8 @@ class VoiceContextController(QObject):
                 self._stop_realtime_capture()
             else:
                 self._stop_and_submit_segment()
-            self.overlay.set_state("Paused", self._session.transcript or "Recording paused")
+            self.overlay.set_session_timeline(self._session)
+            self.overlay.set_state("Paused")
         elif self._session.state == SessionState.PAUSED:
             if self._uses_realtime_asr() and self._realtime_closing:
                 self.overlay.set_state("Paused", "Finalizing the previous speech segment...")
@@ -368,7 +386,8 @@ class VoiceContextController(QObject):
                 self.partial_timer.start(
                     max(800, int(float(self.config.get("asr.partial_interval_s", 2.5)) * 1000))
                 )
-            self.overlay.set_state("Listening", self._session.transcript)
+            self.overlay.set_session_timeline(self._session)
+            self.overlay.set_state("Listening")
         self._update_state_ui()
 
     def finish_session(self) -> None:
@@ -464,7 +483,17 @@ class VoiceContextController(QObject):
                 is_final=True,
             )
         self.main.update_transcript(self._session.transcript)
-        self.overlay.set_transcript(self._session.transcript)
+        self.overlay.set_session_timeline(self._session)
+        self._session.asr_metadata.update(
+            {
+                "status": "success",
+                "request_id": result.request_id,
+                "first_package_delay_ms": round(result.first_package_delay_ms),
+                "last_package_delay_ms": round(result.last_package_delay_ms),
+                "segment_count": int(self._session.asr_metadata.get("segment_count", 0))
+                + len(segments),
+            }
+        )
         LOG.info(
             "Aliyun realtime ASR request %s: first package %.0f ms, final package %.0f ms",
             result.request_id,
@@ -500,16 +529,28 @@ class VoiceContextController(QObject):
         session_id = self._session.id if self._session else ""
 
         def transcribe():
+            started = time.perf_counter()
             with self._asr_lock:
-                return self._engine().transcribe(path)
+                result = self._engine().transcribe(path)
+            return result, round((time.perf_counter() - started) * 1000)
 
         self._submit(
             transcribe,
-            lambda result: self._segment_done(result, start_ms, end_ms, path, session_id),
+            lambda payload: self._segment_done(
+                payload[0], start_ms, end_ms, path, session_id, payload[1]
+            ),
             lambda error: self._segment_failed(error, path, session_id),
         )
 
-    def _segment_done(self, result, start_ms: int, end_ms: int, path: Path, session_id: str) -> None:
+    def _segment_done(
+        self,
+        result,
+        start_ms: int,
+        end_ms: int,
+        path: Path,
+        session_id: str,
+        latency_ms: int = 0,
+    ) -> None:
         self._cleanup_audio(path)
         if not self._session or self._session.id != session_id:
             return
@@ -517,7 +558,14 @@ class VoiceContextController(QObject):
         if result.text.strip():
             self._session.add_speech(result.text, start_ms, end_ms, is_final=True)
             self.main.update_transcript(self._session.transcript)
-            self.overlay.set_transcript(self._session.transcript)
+            self.overlay.set_session_timeline(self._session)
+        self._session.asr_metadata.update(
+            {
+                "status": "success",
+                "latency_ms": int(self._session.asr_metadata.get("latency_ms", 0)) + latency_ms,
+                "segment_count": int(self._session.asr_metadata.get("segment_count", 0)) + 1,
+            }
+        )
         if self._compose_when_ready and self._pending_segments == 0:
             self._begin_compose()
 
@@ -527,6 +575,7 @@ class VoiceContextController(QObject):
             return
         self._pending_segments = max(0, self._pending_segments - 1)
         self._asr_warnings.append(error)
+        self._session.asr_metadata.update({"status": "failed", "error": error})
         if self._compose_when_ready and self._pending_segments == 0:
             self._begin_compose()
         elif self._session:
@@ -572,7 +621,7 @@ class VoiceContextController(QObject):
         self._partial_inflight = False
         self._session.set_partial(result.text)
         self.main.update_transcript(self._session.transcript)
-        self.overlay.set_transcript(self._session.transcript)
+        self.overlay.set_session_timeline(self._session)
 
     def _partial_failed(self, error: str, path: Path, generation: int, audio_generation: int) -> None:
         self._cleanup_audio(path)
@@ -609,7 +658,7 @@ class VoiceContextController(QObject):
             source_app=session.source_app,
         )
 
-        def compose() -> tuple[str, str, dict[str, Any]]:
+        def compose() -> PromptComposeResult:
             warning = "\n".join(self._asr_warnings)
             client = None
             provider = str(llm_config.get("provider", "openai_compatible"))
@@ -629,19 +678,21 @@ class VoiceContextController(QObject):
                     metadata["used"] = bool(client.last_response_text)
                     metadata.update(client.last_metadata)
                     if not client.last_response_text:
-                        metadata["fallback_reason"] = "empty_response"
-                        warning = "\n".join(
-                            filter(
-                                None,
-                                (warning, "LLM returned an empty task; rule composer was used."),
-                            )
-                        )
+                        raise LLMError("LLM returned an empty task.")
             except LLMError as exc:
-                warning = "\n".join(filter(None, (warning, f"LLM rewrite failed; rule composer used: {exc}")))
-                options.use_llm = False
-                prompt = self.composer.compose(session, options)
                 metadata["error"] = str(exc)
-                metadata["fallback_reason"] = "llm_error"
+                metadata["failure_reason"] = (
+                    "empty_response" if "empty task" in str(exc).lower() else "llm_error"
+                )
+                metadata["latency_ms"] = round((time.perf_counter() - started) * 1000)
+                LOG.warning(
+                    "Prompt composer failed: provider=%s model=%s latency=%s ms error=%s",
+                    metadata["provider"],
+                    metadata["model"],
+                    metadata["latency_ms"],
+                    exc,
+                )
+                return PromptComposeResult("", warning, metadata, str(exc))
             metadata["latency_ms"] = round((time.perf_counter() - started) * 1000)
             LOG.info(
                 "Prompt composer completed: requested=%s used=%s provider=%s model=%s latency=%s ms request_id=%s",
@@ -652,51 +703,141 @@ class VoiceContextController(QObject):
                 metadata["latency_ms"],
                 metadata.get("request_id", ""),
             )
-            return prompt, warning, metadata
+            return PromptComposeResult(prompt, warning, metadata)
 
         self._submit(compose, self._compose_done, self._fail_session)
 
-    def _compose_done(self, result: tuple[str, str, dict[str, Any]]) -> None:
+    def _compose_done(self, result: PromptComposeResult) -> None:
         if not self._session or self._session.state != SessionState.COMPOSING:
             return
-        prompt, warning, metadata = result
-        self._session.final_prompt = prompt
-        self._session.composer_metadata = metadata
+        if result.error:
+            self._compose_failed(result)
+            return
+        self._session.final_prompt = result.prompt
+        self._session.composer_metadata = result.metadata
+        self._session.output_metadata = {"status": "pending"}
         self._session.transition(SessionState.PROMPT_READY)
         self.main.set_session(self._session)
         self._update_state_ui()
-        self.main.set_composer_status(metadata, warning)
         output_config = self.config.section("output")
-        if output_config.get("save_history", True) and self.config.get("privacy.local_logs", True):
-            include_refs = bool(self.config.get("privacy.save_reference_content", True))
-            self.history.save(self._session.to_dict(include_reference_content=include_refs))
-            self._refresh_history()
-        if output_config.get("copy_to_clipboard", True) or output_config.get("auto_paste", False):
-            self.copy_prompt(prompt, quiet=True)
-        message = "Prompt copied" if output_config.get("copy_to_clipboard", True) else "Prompt ready"
-        if metadata.get("used"):
-            model = metadata.get("response_model") or metadata.get("model") or metadata.get("provider")
-            composer_type = "streaming LLM" if metadata.get("streamed") else "LLM"
-            message += f" · {composer_type} {model}"
-        elif metadata.get("requested"):
-            message += " · rule fallback"
+        copy_requested = bool(
+            output_config.get("copy_to_clipboard", True) or output_config.get("auto_paste", False)
+        )
+        session_id = self._session.id
+        if copy_requested:
+            self.output.copy_verified(
+                result.prompt,
+                lambda copy_result: self._prompt_delivery_done(
+                    session_id,
+                    copy_result,
+                    copy_requested=True,
+                    warning=result.warning,
+                ),
+            )
         else:
-            message += " · rule composer"
+            self._prompt_delivery_done(
+                session_id,
+                ClipboardWriteResult(False, 0),
+                copy_requested=False,
+                warning=result.warning,
+            )
+
+    def _compose_failed(self, result: PromptComposeResult) -> None:
+        if not self._session:
+            return
+        self._session.final_prompt = ""
+        self._session.composer_metadata = result.metadata
+        self._session.output_metadata = {
+            "clipboard_requested": False,
+            "clipboard_verified": False,
+            "attempts": 0,
+            "status": "skipped",
+        }
+        self._session.error = result.error
+        self._session.transition(SessionState.ERROR)
+        self.main.set_session(self._session)
+        self._update_state_ui()
+        self.main.set_completion_receipt(self._session, result.warning)
+        self._save_session()
+        self.overlay.show_compose_failure(result.error, len(self._session.references))
+        self.tray.showMessage(
+            "VoiceContext generation failed",
+            result.error[:500],
+            QSystemTrayIcon.MessageIcon.Critical,
+            5000,
+        )
+
+    def _prompt_delivery_done(
+        self,
+        session_id: str,
+        result: ClipboardWriteResult,
+        *,
+        copy_requested: bool,
+        warning: str = "",
+    ) -> None:
+        if (
+            not self._session
+            or self._session.id != session_id
+            or self._session.state != SessionState.PROMPT_READY
+        ):
+            return
+        clipboard_state = "not_requested"
+        if copy_requested:
+            clipboard_state = "copied" if result.success else "failed"
+        restore_original = bool(
+            result.success
+            and self.config.get("clipboard.restore_original", False)
+            and self._original_clipboard
+        )
+        self._session.output_metadata = {
+            "clipboard_requested": copy_requested,
+            "clipboard_verified": bool(copy_requested and result.success),
+            "attempts": result.attempts,
+            "status": clipboard_state,
+            "error": result.error,
+            "restored_original_pending": restore_original,
+        }
+        self.main.set_completion_receipt(self._session, warning)
+        self._save_session()
+        self.overlay.show_completion(
+            self._session.final_prompt,
+            len(self._session.references),
+            clipboard_state,
+            restore_original=restore_original,
+        )
         if warning:
-            message += f"\n{warning[:220]}"
-            self.tray.showMessage("VoiceContext warning", warning[:500], QSystemTrayIcon.MessageIcon.Warning, 5000)
-        self.overlay.set_state("PromptReady", message)
-        if output_config.get("show_preview", True):
-            self.show_main()
-        if output_config.get("auto_paste", False):
+            self.tray.showMessage(
+                "VoiceContext warning",
+                warning[:500],
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
+            )
+        if copy_requested and not result.success:
+            self.tray.showMessage(
+                "Clipboard copy failed",
+                result.error or "The generated prompt is still available in VoiceContext.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
+            )
+            return
+        output_config = self.config.section("output")
+        if output_config.get("auto_paste", False) and result.success:
             self._automatic_paste()
-        if self.config.get("clipboard.restore_original", False) and self._original_clipboard:
-            # Keep the generated prompt available briefly for automatic paste, then restore the user's clipboard.
-            session_id = self._session.id
+        if restore_original:
             QTimer.singleShot(
                 1800 if output_config.get("auto_paste", False) else 3500,
                 lambda: self._restore_clipboard(session_id),
             )
+
+    def _save_session(self) -> None:
+        if not self._session:
+            return
+        if self.config.get("output.save_history", True) and self.config.get(
+            "privacy.local_logs", True
+        ):
+            include_refs = bool(self.config.get("privacy.save_reference_content", True))
+            self.history.save(self._session.to_dict(include_reference_content=include_refs))
+            self._refresh_history()
 
     def regenerate(self) -> None:
         if not self._session or self._session.state != SessionState.PROMPT_READY:
@@ -721,7 +862,7 @@ class VoiceContextController(QObject):
         if not reference:
             return
         self.main.update_references(self._session)
-        self.overlay.set_references(self._session.references)
+        self.overlay.set_session_timeline(self._session, highlighted_id=reference.id)
         should_warn = (
             sensitive
             and self.config.get("clipboard.sensitive_warning", True)
@@ -740,19 +881,19 @@ class VoiceContextController(QObject):
     def delete_reference(self, reference_id: str) -> None:
         if self._session and self._session.remove_reference(reference_id):
             self.main.update_references(self._session)
-            self.overlay.set_references(self._session.references)
+            self.overlay.set_session_timeline(self._session)
 
     def update_reference(self, reference_id: str, name: str, content_type: str) -> None:
         if self._session and self._session.update_reference(reference_id, name, content_type):
             self.main.update_references(self._session)
-            self.overlay.set_references(self._session.references)
+            self.overlay.set_session_timeline(self._session)
 
     def undo_reference(self) -> None:
         if self._session and self._session.state in {SessionState.LISTENING, SessionState.PAUSED}:
             removed = self._session.undo_reference()
             if removed:
                 self.main.update_references(self._session)
-                self.overlay.set_references(self._session.references)
+                self.overlay.set_session_timeline(self._session)
                 self.overlay.show_capture(removed)
                 self.overlay.status.setText(f"Removed {removed.id}")
 
@@ -761,25 +902,61 @@ class VoiceContextController(QObject):
             removed = self._session.ignore_last_capture()
             if removed:
                 self.main.update_references(self._session)
-                self.overlay.set_references(self._session.references)
+                self.overlay.set_session_timeline(self._session)
                 self.overlay.show_capture(removed)
                 self.overlay.status.setText("Capture ignored")
 
-    def copy_prompt(self, text: str, quiet: bool = False) -> None:
+    def copy_prompt(
+        self,
+        text: str,
+        quiet: bool = False,
+        on_complete: Callable[[ClipboardWriteResult], None] | None = None,
+    ) -> None:
         if not text.strip():
             return
-        if self._session and self._session.state == SessionState.PROMPT_READY and text != self._session.final_prompt:
+        editable_session = (
+            self._session
+            if self._session and self._session.state == SessionState.PROMPT_READY
+            else None
+        )
+        if editable_session and text != editable_session.final_prompt:
             self._session.final_prompt = text
-            if self.config.get("output.save_history", True) and self.config.get("privacy.local_logs", True):
-                self.history.save(
-                    self._session.to_dict(
-                        include_reference_content=bool(self.config.get("privacy.save_reference_content", True))
-                    )
-                )
+            self._session.output_metadata = {"status": "pending"}
         self.clipboard_watcher.suppress_next_change()
-        self.output.copy(text)
-        if not quiet:
-            self.overlay.set_state("PromptReady", "Prompt copied to clipboard")
+        session_id = editable_session.id if editable_session else ""
+
+        def done(result: ClipboardWriteResult) -> None:
+            if (
+                self._session
+                and self._session.id == session_id
+                and self._session.state == SessionState.PROMPT_READY
+            ):
+                self._session.output_metadata = {
+                    "clipboard_requested": True,
+                    "clipboard_verified": result.success,
+                    "attempts": result.attempts,
+                    "status": "copied" if result.success else "failed",
+                    "error": result.error,
+                }
+                self.main.set_completion_receipt(self._session)
+                self._save_session()
+                if not quiet:
+                    self.overlay.show_completion(
+                        self._session.final_prompt,
+                        len(self._session.references),
+                        "copied" if result.success else "failed",
+                    )
+            if not result.success:
+                self.tray.showMessage(
+                    "Clipboard copy failed",
+                    result.error,
+                    QSystemTrayIcon.MessageIcon.Warning,
+                    5000,
+                )
+            if on_complete:
+                on_complete(result)
+
+        self.output.copy_verified(text, done)
 
     def _restore_clipboard(self, session_id: str | None = None) -> None:
         if session_id and session_id != self._original_clipboard_session_id:
@@ -793,16 +970,30 @@ class VoiceContextController(QObject):
             data.setHtml(html)
         self.clipboard_watcher.suppress_next_change()
         self.app.clipboard().setMimeData(data)
+        if self._session and (not session_id or self._session.id == session_id):
+            self._session.output_metadata.update(
+                {
+                    "restored_original_pending": False,
+                    "restored_original": True,
+                }
+            )
+            self.main.set_completion_receipt(self._session)
+            self._save_session()
         self._original_clipboard = None
         self._original_clipboard_session_id = None
 
     def paste_prompt(self, text: str) -> None:
         if not text.strip():
             return
-        self.copy_prompt(text, quiet=True)
-        self.main.hide()
-        activate_window(self._target_window.hwnd)
-        QTimer.singleShot(180, lambda: self.output.paste(False))
+
+        def paste_after_copy(result: ClipboardWriteResult) -> None:
+            if not result.success:
+                return
+            self.main.hide()
+            activate_window(self._target_window.hwnd)
+            QTimer.singleShot(180, lambda: self.output.paste(False))
+
+        self.copy_prompt(text, quiet=True, on_complete=paste_after_copy)
 
     def _automatic_paste(self) -> None:
         if not self._session:
@@ -845,7 +1036,27 @@ class VoiceContextController(QObject):
             self.overlay.hide()
         else:
             state = self._session.state.value if self._session else "Idle"
-            self.overlay.set_state(state, self._session.transcript if self._session else "Ready")
+            if self._session and self._session.state == SessionState.PROMPT_READY:
+                output = self._session.output_metadata
+                self.overlay.show_completion(
+                    self._session.final_prompt,
+                    len(self._session.references),
+                    str(output.get("status", "not_requested")),
+                    restore_original=bool(output.get("restored_original_pending", False)),
+                )
+            else:
+                if self._session:
+                    self.overlay.set_session_timeline(self._session)
+                    self.overlay.set_state(state)
+                else:
+                    self.overlay.set_state(state, "Ready")
+
+    def _edit_prompt_from_overlay(self) -> None:
+        if not self._session or self._session.state != SessionState.PROMPT_READY:
+            return
+        self.main.set_session(self._session)
+        self.main.set_completion_receipt(self._session)
+        self.main.focus_prompt_editor()
 
     def show_main(self) -> None:
         self.main.show_normal()
@@ -948,6 +1159,14 @@ class VoiceContextController(QObject):
             self.executor.submit(self._quiet_stop_realtime, engine)
         if self._session:
             self._session.error = message
+            if self._session.asr_metadata.get("status") != "success":
+                self._session.asr_metadata.update({"status": "failed", "error": message})
+            self._session.output_metadata = {
+                "clipboard_requested": False,
+                "clipboard_verified": False,
+                "attempts": 0,
+                "status": "skipped",
+            }
             if self._session.state != SessionState.ERROR:
                 try:
                     self._session.transition(SessionState.ERROR)

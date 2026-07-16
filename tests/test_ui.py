@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 
 from voice_context.core.session import SessionState, VoiceSession
 from voice_context.input.hotkeys import HotkeyManager
 from voice_context.storage.config_store import ConfigStore
 from voice_context.ui.hotkey_capture import HotkeyCaptureEdit
 from voice_context.ui.main_window import MainWindow
+from voice_context.ui.overlay import OverlayWindow
 from voice_context.ui.i18n import set_language
 from voice_context.ui.settings_window import SettingsWindow
 
@@ -58,8 +59,82 @@ def test_main_window_shows_actual_llm_model_and_fallback(qtbot) -> None:
     )
 
     window.set_composer_status({"requested": True, "used": False}, "timed out")
-    assert window.context_label.text() == "LLM failed; rule composer was used"
+    assert window.context_label.text() == "LLM failed"
     assert window.context_label.toolTip() == "timed out"
+
+
+def test_main_window_shows_full_completion_receipt(qtbot) -> None:
+    set_language("en")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    session = VoiceSession()
+    session.asr_metadata = {"status": "success", "model": "fun-asr-realtime"}
+    session.composer_metadata = {
+        "requested": True,
+        "used": True,
+        "response_model": "deepseek",
+        "latency_ms": 250,
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+    }
+    session.output_metadata = {"status": "copied"}
+    session.add_reference("A")
+
+    window.set_completion_receipt(session)
+
+    assert window.copy_button.text() == "Save and copy"
+    assert window.context_label.text() == (
+        "ASR fun-asr-realtime: succeeded | 1 references | "
+        "LLM deepseek 250 ms 100->20 token | Clipboard verified"
+    )
+
+
+def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    qtbot.addWidget(overlay)
+    session = VoiceSession()
+    session.set_partial("use this")
+    session.add_reference("A")
+    overlay.set_session_timeline(session)
+    assert "[1]" in overlay.transcript.text()
+
+    overlay.show_completion("Use A", 1, "copied")
+    assert overlay.status.text() == "Completed · Copied"
+    assert overlay.references.text() == "1 references · Click to edit"
+    assert overlay._hide_timer.interval() == 4000
+    with qtbot.waitSignal(overlay.edit_requested, timeout=1000):
+        qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
+
+
+def test_overlay_compose_failure_is_not_editable(qtbot) -> None:
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    qtbot.addWidget(overlay)
+    observed = []
+    overlay.edit_requested.connect(observed.append)
+    overlay.show_compose_failure("LLM timed out", 2)
+
+    qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
+
+    assert observed == []
+    assert overlay.status.text() == "Generation failed"
+    assert overlay.transcript.text() == "LLM timed out"
+
+
+def test_dragging_completion_overlay_does_not_open_editor(qtbot) -> None:
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    qtbot.addWidget(overlay)
+    observed = []
+    overlay.edit_requested.connect(lambda: observed.append(True))
+    overlay.show_completion("Use A", 1, "copied")
+    start = overlay.frame.rect().center()
+
+    qtbot.mousePress(overlay.frame, Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(overlay.frame, pos=start + QPoint(50, 0))
+    qtbot.mouseRelease(overlay.frame, Qt.MouseButton.LeftButton, pos=start + QPoint(50, 0))
+
+    assert observed == []
 
 
 def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
@@ -72,6 +147,7 @@ def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
         "General", "Hotkeys", "ASR", "LLM", "Prompt", "Clipboard", "Output", "Privacy", "Advanced"
     ]
     assert isinstance(window.hotkey_edits["toggle_listening"], HotkeyCaptureEdit)
+    assert all(path != "output.show_preview" for path, _, _ in window.bindings)
 
 
 def test_hotkey_capture_records_pressed_combination(qtbot) -> None:

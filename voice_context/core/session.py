@@ -76,7 +76,9 @@ class VoiceSession:
     events: list[TimelineEvent] = field(default_factory=list)
     partial_transcript: str = ""
     final_prompt: str = ""
+    asr_metadata: dict = field(default_factory=dict)
     composer_metadata: dict = field(default_factory=dict)
+    output_metadata: dict = field(default_factory=dict)
     error: str = ""
     source_app: str = ""
     _ignored_content: str = field(default="", repr=False)
@@ -221,7 +223,9 @@ class VoiceSession:
             "events": [serialize(event) for event in self.events],
             "transcript": self.transcript,
             "finalPrompt": stored_prompt,
+            "asr": dict(self.asr_metadata),
             "composer": dict(self.composer_metadata),
+            "output": dict(self.output_metadata),
             "error": self.error,
             "sourceApp": self.source_app,
         }

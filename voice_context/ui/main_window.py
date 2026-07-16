@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
         self.heading.setStyleSheet("font-size: 20px; font-weight: 650;")
         self.context_label = QLabel("Ready for a voice session")
         self.context_label.setObjectName("muted")
+        self.context_label.setWordWrap(True)
         heading_box.addWidget(self.heading)
         heading_box.addWidget(self.context_label)
         layout.addLayout(heading_box)
@@ -219,7 +220,8 @@ class MainWindow(QMainWindow):
         self.prompt_edit.setFont(font)
         right_layout.addWidget(self.prompt_edit, 1)
         actions = QHBoxLayout()
-        self.copy_button = QPushButton("Copy")
+        self.copy_button = QPushButton("Save and copy")
+        self.copy_button.setObjectName("primary")
         self.copy_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.copy_button.clicked.connect(lambda: self.copy_requested.emit(self.prompt_edit.toPlainText()))
         self.paste_button = QPushButton("Paste")
@@ -327,10 +329,68 @@ class MainWindow(QMainWindow):
                     status += f" · {usage_text}"
             self.context_label.setText(status)
         elif metadata.get("requested"):
-            self.context_label.setText(tr("LLM failed; rule composer was used"))
+            self.context_label.setText(tr("LLM failed"))
         else:
             self.context_label.setText(tr("Prompt ready via rule composer"))
         self.context_label.setToolTip(warning)
+
+    def set_completion_receipt(self, session: VoiceSession, warning: str = "") -> None:
+        asr = session.asr_metadata
+        asr_name = asr.get("model") or asr.get("provider") or "ASR"
+        asr_status = (
+            tr("succeeded")
+            if asr.get("status") == "success"
+            else tr(str(asr.get("status", "unknown")))
+        )
+        parts = [f"ASR {asr_name}: {asr_status}"]
+        parts.append(tr("{count} references").format(count=len(session.references)))
+
+        composer = session.composer_metadata
+        if composer.get("used"):
+            model = (
+                composer.get("response_model")
+                or composer.get("model")
+                or composer.get("provider")
+                or "LLM"
+            )
+            detail = f"LLM {model}"
+            latency = composer.get("latency_ms")
+            if isinstance(latency, int):
+                detail += f" {latency} ms"
+            usage = composer.get("usage", {})
+            if isinstance(usage, dict):
+                input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+                output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+                if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+                    detail += f" {input_tokens}->{output_tokens} token"
+            parts.append(detail)
+        elif composer.get("requested"):
+            parts.append(tr("LLM failed"))
+        else:
+            parts.append(tr("Rule composer"))
+
+        output_status = str(session.output_metadata.get("status", "pending"))
+        output_labels = {
+            "copied": "Clipboard verified",
+            "failed": "Clipboard copy failed",
+            "not_requested": "Clipboard not requested",
+            "skipped": "Clipboard skipped",
+            "pending": "Clipboard pending",
+        }
+        parts.append(tr(output_labels.get(output_status, output_status)))
+        self.context_label.setText(" | ".join(parts))
+        tooltip = "\n".join(
+            filter(None, (warning, session.error, session.output_metadata.get("error", "")))
+        )
+        self.context_label.setToolTip(tooltip)
+
+    def focus_prompt_editor(self) -> None:
+        self._show_page(0)
+        self.show_normal()
+        self.prompt_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        cursor = self.prompt_edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.prompt_edit.setTextCursor(cursor)
 
     def update_references(self, session: VoiceSession) -> None:
         self._session = session

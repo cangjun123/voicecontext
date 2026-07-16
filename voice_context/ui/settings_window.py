@@ -193,6 +193,10 @@ class SettingsWindow(QDialog):
             ("top_center", "Top center"), ("top_right", "Top right")]))
         form.addRow("Overlay opacity", self._double("general.overlay_opacity", 0.4, 1.0, 0.05))
         form.addRow("Feedback duration", self._spin("general.overlay_duration_ms", 500, 10000, " ms"))
+        form.addRow(
+            "Completion result duration",
+            self._spin("general.completion_overlay_duration_ms", 1000, 15000, " ms"),
+        )
         form.addRow("Keep history", self._spin("general.history_days", 0, 3650, " days"))
         form.addRow("", self._note("Set history retention to 0 to remove sessions after the current day."))
         return page
@@ -365,7 +369,6 @@ class SettingsWindow(QDialog):
             ("auto_paste", "Automatically paste into the source window"),
             ("auto_submit", "Press Enter after automatic paste"),
             ("confirm_before_paste", "Confirm before automatic paste"),
-            ("show_preview", "Show prompt preview"),
             ("save_history", "Save completed sessions"),
         ]
         for key, label in items:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -12,10 +12,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from voice_context.core.anchors import render_anchored_transcript
+from voice_context.core.session import VoiceSession
+
 from .i18n import tr, translate_widget_tree
 
 
 class OverlayWindow(QWidget):
+    edit_requested = Signal()
+
     COLORS = {
         "Idle": "#778089",
         "Listening": "#28a175",
@@ -37,7 +42,10 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setObjectName("overlay")
         self.config = config
+        self._state = "Idle"
         self._drag_origin: QPoint | None = None
+        self._press_position: QPoint | None = None
+        self._dragging = False
         self._pinned_position = False
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -96,10 +104,12 @@ class OverlayWindow(QWidget):
         )
 
     def set_state(self, state: str, detail: str = "") -> None:
+        self._state = state
         labels = {"PromptReady": "Prompt copied", "Composing": "Composing"}
         self.status.setText(tr(labels.get(state, state)))
         self._apply_style(state)
         if detail:
+            self.transcript.setTextFormat(Qt.TextFormat.PlainText)
             self.transcript.setText(tr(detail))
         self.level.setVisible(state == "Listening")
         self._hide_timer.stop()
@@ -111,23 +121,91 @@ class OverlayWindow(QWidget):
         value = text.strip()
         if len(value) > 240:
             value = "..." + value[-237:]
+        self.transcript.setTextFormat(Qt.TextFormat.PlainText)
         self.transcript.setText(value or "Listening for speech...")
+
+    def set_session_timeline(self, session: VoiceSession, highlighted_id: str = "") -> None:
+        self.transcript.setTextFormat(Qt.TextFormat.RichText)
+        self.transcript.setText(
+            render_anchored_transcript(
+                session.transcript,
+                session.references,
+                highlighted_id=highlighted_id,
+            )
+            or tr("Listening for speech...")
+        )
+        self.set_references(session.references)
 
     def set_references(self, references: list) -> None:
         if not references:
             self.references.setText(tr("References: none"))
             return
-        labels = "  ".join(f"[{ref.id}] {ref.name}" for ref in references[-3:])
+        start = max(0, len(references) - 3)
+        labels = "  ".join(
+            f"[{index}] {ref.name}"
+            for index, ref in enumerate(references[start:], start=start + 1)
+        )
         prefix = f"{tr('References')} ({len(references)}): "
         self.references.setText(prefix + labels)
 
     def show_capture(self, reference, sensitive: bool = False) -> None:
         label = tr("Sensitive content detected") if sensitive else f"{tr('Captured')} {reference.id}"
         self.status.setText(label)
-        self.transcript.setText(reference.preview)
         self._apply_style("Error" if sensitive else "Listening")
         self.show_without_focus()
-        QTimer.singleShot(1300, lambda: self.status.setText(tr("Listening")) if self.isVisible() else None)
+        QTimer.singleShot(1300, self._restore_capture_status)
+
+    def _restore_capture_status(self) -> None:
+        if not self.isVisible():
+            return
+        state = self._state if self._state in {"Listening", "Paused"} else "Listening"
+        self.status.setText(tr(state))
+        self._apply_style(state)
+
+    def show_completion(
+        self,
+        prompt: str,
+        reference_count: int,
+        clipboard_state: str,
+        *,
+        restore_original: bool = False,
+    ) -> None:
+        self._state = "PromptReady"
+        titles = {
+            "copied": "Completed · Copied",
+            "not_requested": "Completed · Not copied",
+            "failed": "Completed · Copy failed",
+        }
+        title = titles.get(clipboard_state, "Completed")
+        if clipboard_state == "copied" and restore_original:
+            title = "Completed · Copied, original will be restored"
+        self.status.setText(tr(title))
+        self._apply_style("Error" if clipboard_state == "failed" else "PromptReady")
+        value = prompt.strip()
+        if len(value) > 240:
+            value = value[:237] + "..."
+        self.transcript.setTextFormat(Qt.TextFormat.PlainText)
+        self.transcript.setText(value)
+        footer = tr("{count} references · Click to edit").format(count=reference_count)
+        self.references.setText(footer)
+        self.level.hide()
+        self._hide_timer.stop()
+        self.show_without_focus()
+        self._hide_timer.start(int(self.config.get("completion_overlay_duration_ms", 4000)))
+
+    def show_compose_failure(self, detail: str, reference_count: int) -> None:
+        self._state = "Error"
+        self.status.setText(tr("Generation failed"))
+        self._apply_style("Error")
+        self.transcript.setTextFormat(Qt.TextFormat.PlainText)
+        self.transcript.setText(detail)
+        self.references.setText(
+            tr("Transcript and {count} references were preserved").format(count=reference_count)
+        )
+        self.level.hide()
+        self._hide_timer.stop()
+        self.show_without_focus()
+        self._hide_timer.start(int(self.config.get("completion_overlay_duration_ms", 4000)))
 
     def set_level(self, value: float) -> None:
         self.level.setValue(int(max(0.0, min(1.0, value)) * 100))
@@ -165,25 +243,54 @@ class OverlayWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_origin = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._pointer_press(event)
+            event.accept()
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-            self._drag_origin = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._pointer_press(event)
             return True
-        if event.type() == QEvent.Type.MouseMove and self._drag_origin and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_origin)
-            self._pinned_position = True
+        if event.type() == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
+            self._pointer_move(event)
             return True
         if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            self._drag_origin = None
+            self._pointer_release()
             return True
         return super().eventFilter(watched, event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_origin and event.buttons() & Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_origin)
-            self._pinned_position = True
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._pointer_move(event)
+            event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pointer_release()
+            event.accept()
+
+    def _pointer_press(self, event: QMouseEvent) -> None:
+        position = event.globalPosition().toPoint()
+        self._press_position = position
+        self._drag_origin = position - self.frameGeometry().topLeft()
+        self._dragging = False
+
+    def _pointer_move(self, event: QMouseEvent) -> None:
+        if self._drag_origin is None or self._press_position is None:
+            return
+        position = event.globalPosition().toPoint()
+        if not self._dragging:
+            distance = (position - self._press_position).manhattanLength()
+            self._dragging = distance >= QApplication.startDragDistance()
+        if self._dragging:
+            self.move(position - self._drag_origin)
+            self._pinned_position = True
+
+    def _pointer_release(self) -> None:
+        clicked = self._drag_origin is not None and not self._dragging
         self._drag_origin = None
+        self._press_position = None
+        self._dragging = False
+        if clicked and self._state == "PromptReady":
+            self._hide_timer.stop()
+            self.hide()
+            self.edit_requested.emit()
