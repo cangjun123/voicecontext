@@ -27,6 +27,18 @@ a = Analysis(
     noarchive=False,
     optimize=1,
 )
+
+# Qt6Core uses the ICU implementation shipped by Windows. If Anaconda is on
+# PATH, PyInstaller may resolve Qt6Core's generic icuuc.dll dependency to
+# Anaconda's private, versioned ICU build instead. Putting that DLL in the
+# application root makes the bootloader prefer it over the compatible system
+# DLL and PySide6.QtCore then fails to import with WinError 127.
+def is_foreign_icu(binary):
+    name = binary[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name == "icuuc.dll" or (name.startswith("icudt") and name.endswith(".dll"))
+
+
+a.binaries = [binary for binary in a.binaries if not is_foreign_icu(binary)]
 pyz = PYZ(a.pure)
 
 exe = EXE(

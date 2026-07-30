@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from .i18n import tr
+
+
+LOG = logging.getLogger("voice_context")
 
 
 def create_tray_icon(color: str = "#258263") -> QIcon:
@@ -64,15 +69,28 @@ class TrayIcon(QSystemTrayIcon):
         self.set_state("Idle")
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        LOG.info("Tray activated: %s", reason.name)
+        if reason in {
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        }:
             self.show_requested.emit()
 
     def set_state(self, state: str) -> None:
         active = state in {"Listening", "Paused"}
-        self.start_action.setEnabled(not active)
+        busy = state in {"Armed", "Composing"}
+        self.start_action.setEnabled(not active and not busy)
         self.finish_action.setEnabled(active)
         self.pause_action.setEnabled(active)
         self.pause_action.setText(tr("Resume" if state == "Paused" else "Pause"))
         self.setToolTip(f"VoiceContext - {state}")
-        color = "#d29433" if state == "Paused" else "#258263" if active else "#687078"
+        color = (
+            "#d29433"
+            if state == "Paused"
+            else "#258263"
+            if active
+            else "#3978b8"
+            if busy
+            else "#687078"
+        )
         self.setIcon(create_tray_icon(color))

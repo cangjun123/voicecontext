@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
+import logging
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCloseEvent, QTextCursor
+from PySide6.QtGui import QCloseEvent, QCursor, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -27,6 +30,9 @@ from PySide6.QtWidgets import (
 from voice_context.core.session import SessionState, VoiceSession
 from .i18n import tr, translate_widget_tree
 from .reference_widget import ReferenceEditDialog, ReferenceWidget
+
+
+LOG = logging.getLogger("voice_context")
 
 
 class MainWindow(QMainWindow):
@@ -430,10 +436,11 @@ class MainWindow(QMainWindow):
     def set_state(self, state: SessionState) -> None:
         self.status_badge.setText(tr(state.value))
         active = state in {SessionState.LISTENING, SessionState.PAUSED}
-        self.start_button.setVisible(not active and state != SessionState.COMPOSING)
+        busy = state in {SessionState.ARMED, SessionState.COMPOSING}
+        self.start_button.setVisible(not active and not busy)
         self.stop_button.setVisible(active)
         self.pause_button.setVisible(active)
-        self.cancel_button.setVisible(active or state == SessionState.COMPOSING)
+        self.cancel_button.setVisible(active or busy)
         self.pause_button.setText(tr("Resume" if state == SessionState.PAUSED else "Pause"))
         self.pause_button.setIcon(
             self.style().standardIcon(
@@ -448,6 +455,7 @@ class MainWindow(QMainWindow):
         self.regenerate_button.setEnabled(ready)
         messages = {
             SessionState.IDLE: "Ready for a voice session",
+            SessionState.ARMED: "Starting microphone and speech recognition",
             SessionState.LISTENING: "Listening and watching the clipboard",
             SessionState.PAUSED: "Recording paused; clipboard capture remains active",
             SessionState.COMPOSING: "Transcribing and composing the final prompt",
@@ -498,10 +506,62 @@ class MainWindow(QMainWindow):
             self.history_delete_requested.emit(session_id)
 
     def show_normal(self) -> None:
-        self.show()
+        screens = QApplication.screens()
+        frame = self.frameGeometry()
+        if screens and not any(screen.availableGeometry().intersects(frame) for screen in screens):
+            target = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            if target is not None:
+                area = target.availableGeometry()
+                x = max(
+                    area.left(),
+                    min(area.right() - self.width() + 1, area.center().x() - self.width() // 2),
+                )
+                y = max(
+                    area.top(),
+                    min(area.bottom() - self.height() + 1, area.center().y() - self.height() // 2),
+                )
+                self.move(x, y)
+                LOG.info("Moved the main window back onto screen at %s,%s", x, y)
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if os.name == "nt":
+            self._activate_windows_window()
+
+    def _activate_windows_window(self) -> None:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            hwnd = int(self.winId())
+            user32 = ctypes.windll.user32
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            if int(user32.GetForegroundWindow() or 0) == hwnd:
+                LOG.info("Activated the main window through the Windows foreground API")
+                return
+            LOG.info("Windows denied foreground activation; flashing the taskbar instead")
+
+            class FLASHWINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.UINT),
+                    ("hwnd", wintypes.HWND),
+                    ("dwFlags", wintypes.DWORD),
+                    ("uCount", wintypes.UINT),
+                    ("dwTimeout", wintypes.DWORD),
+                ]
+
+            info = FLASHWINFO(
+                ctypes.sizeof(FLASHWINFO),
+                hwnd,
+                0x00000002 | 0x0000000C,
+                3,
+                0,
+            )
+            user32.FlashWindowEx(ctypes.byref(info))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._force_close:

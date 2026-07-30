@@ -49,6 +49,12 @@ class PromptComposeResult:
     error: str = ""
 
 
+@dataclass(slots=True)
+class CaptureStartupResult:
+    audio: AudioCapture
+    realtime_engine: AliyunRealtimeASR | None = None
+
+
 class TaskSignals(QObject):
     succeeded = Signal(object)
     failed = Signal(str)
@@ -57,20 +63,37 @@ class TaskSignals(QObject):
 class SingleInstance(QObject):
     message_received = Signal(str)
     NAME = "VoiceContext-6A45E04B-5B19-4B4B-A3D8"
+    last_error = ""
 
     @classmethod
     def acquire(cls) -> SingleInstance | None:
+        cls.last_error = ""
         probe = QLocalSocket()
         probe.connectToServer(cls.NAME)
         if probe.waitForConnected(150):
             probe.write(b"show")
             probe.waitForBytesWritten(150)
+            if not probe.waitForReadyRead(300):
+                LOG.warning("The running VoiceContext instance did not acknowledge the show request.")
             probe.disconnectFromServer()
+            return None
+        if probe.error() not in {
+            QLocalSocket.LocalSocketError.ServerNotFoundError,
+            QLocalSocket.LocalSocketError.ConnectionRefusedError,
+        }:
+            cls.last_error = f"Could not contact the running VoiceContext instance: {probe.errorString()}"
+            LOG.error(cls.last_error)
             return None
         QLocalServer.removeServer(cls.NAME)
         instance = cls()
         instance.server = QLocalServer(instance)
+        instance._sockets: set[QLocalSocket] = set()
         if not instance.server.listen(cls.NAME):
+            cls.last_error = (
+                "Could not create the VoiceContext single-instance server: "
+                f"{instance.server.errorString()}"
+            )
+            LOG.error(cls.last_error)
             return None
         instance.server.newConnection.connect(instance._accept)
         return instance
@@ -78,10 +101,21 @@ class SingleInstance(QObject):
     def _accept(self) -> None:
         while self.server.hasPendingConnections():
             socket = self.server.nextPendingConnection()
-            socket.waitForReadyRead(100)
-            message = bytes(socket.readAll()).decode("utf-8", "replace") or "show"
-            self.message_received.emit(message)
-            socket.disconnectFromServer()
+            self._sockets.add(socket)
+            socket.readyRead.connect(lambda current=socket: self._read_socket(current))
+            socket.disconnected.connect(
+                lambda current=socket: self._sockets.discard(current)
+            )
+            if socket.bytesAvailable():
+                self._read_socket(socket)
+
+    def _read_socket(self, socket: QLocalSocket) -> None:
+        message = bytes(socket.readAll()).decode("utf-8", "replace") or "show"
+        LOG.info("Single-instance request received: %s", message)
+        self.message_received.emit(message)
+        socket.write(b"ok")
+        socket.flush()
+        socket.disconnectFromServer()
 
 
 class VoiceContextController(QObject):
@@ -113,6 +147,9 @@ class VoiceContextController(QObject):
         self._realtime_engine: AliyunRealtimeASR | None = None
         self._realtime_closing = False
         self._hold_owns_session = False
+        self._finish_when_ready = False
+        self._resume_inflight = False
+        self._busy_notice_at = 0.0
         self._settings_window: SettingsWindow | None = None
 
         apply_theme(app, str(self.config.get("general.theme", "system")))
@@ -121,7 +158,7 @@ class VoiceContextController(QObject):
         self.main = MainWindow()
         self.overlay = OverlayWindow(self.config.section("general"))
         self.tray = TrayIcon(self)
-        self.hotkeys = HotkeyManager()
+        self.hotkeys = HotkeyManager(window_handle=int(self.main.winId()))
         self.clipboard_watcher = ClipboardWatcher(app.clipboard(), self.config.section("clipboard"))
         self.output = OutputDispatcher(app.clipboard())
         self.partial_timer = QTimer(self)
@@ -186,6 +223,8 @@ class VoiceContextController(QObject):
         self.hotkeys.overlay_requested.connect(self.toggle_overlay)
         self.hotkeys.recopy_requested.connect(self.recopy_last_prompt)
         self.hotkeys.registration_error.connect(self._show_hotkey_error)
+        self.hotkeys.registration_changed.connect(self._hotkey_registration_changed)
+        self.hotkeys.action_triggered.connect(self._log_hotkey_action)
         self.clipboard_watcher.captured.connect(self._clipboard_captured)
 
     def _apply_runtime_settings(self, initial: bool = False) -> None:
@@ -193,21 +232,25 @@ class VoiceContextController(QObject):
         self.overlay.config = self.config.section("general")
         self.overlay.setWindowOpacity(float(self.config.get("general.overlay_opacity", 0.94)))
         self.clipboard_watcher.config = self.config.section("clipboard")
-        errors = self.hotkeys.register(self.config.section("hotkeys"))
+        self.hotkeys.register(self.config.section("hotkeys"))
         try:
             set_startup(bool(self.config.get("general.startup", False)))
         except OSError as exc:
             LOG.warning("Could not update startup registration: %s", exc)
         if self.config.get("privacy.auto_cleanup", True):
             self.history.cleanup(int(self.config.get("general.history_days", 30)))
-        if errors and not initial:
-            QMessageBox.warning(self.main, "Global hotkey conflict", "\n".join(errors))
 
     @property
     def active(self) -> bool:
         return bool(
             self._session
-            and self._session.state in {SessionState.LISTENING, SessionState.PAUSED, SessionState.COMPOSING}
+            and self._session.state
+            in {
+                SessionState.ARMED,
+                SessionState.LISTENING,
+                SessionState.PAUSED,
+                SessionState.COMPOSING,
+            }
         )
 
     def _uses_realtime_asr(self) -> bool:
@@ -215,16 +258,22 @@ class VoiceContextController(QObject):
 
     def start_session(self) -> None:
         if self.active:
+            self._notify_busy()
             return
         if self._session and self._session.state == SessionState.ERROR:
             self._session.transition(SessionState.IDLE)
         self._generation += 1
         self._target_window = get_foreground_info()
-        mime = self.app.clipboard().mimeData()
-        self._original_clipboard = (
-            self.app.clipboard().text(),
-            mime.html() if mime is not None and mime.hasHtml() else "",
-        )
+        self._original_clipboard = None
+        if self.config.get("clipboard.restore_original", False):
+            try:
+                mime = self.app.clipboard().mimeData()
+                self._original_clipboard = (
+                    self.app.clipboard().text(),
+                    mime.html() if mime is not None and mime.hasHtml() else "",
+                )
+            except Exception as exc:
+                LOG.warning("Could not capture the original clipboard: %s", exc)
         self._session = VoiceSession(source_app=self._target_window.process)
         asr_config = self.config.section("asr")
         self._session.asr_metadata = {
@@ -240,15 +289,68 @@ class VoiceContextController(QObject):
         self._asr_warnings.clear()
         self._partial_inflight = False
         self._asr_engine = None
-        self._session.transition(SessionState.LISTENING)
+        self._finish_when_ready = False
+        self._session.transition(SessionState.ARMED)
         self._segment_start_ms = 0
+        session_id = self._session.id
+        generation = self._generation
+        self.main.set_session(self._session)
+        self._update_state_ui()
+        self.overlay.set_state("Armed", "Starting microphone and speech recognition...")
+        self._submit(
+            self._create_capture_resources,
+            lambda result: self._capture_started(result, session_id, generation),
+            lambda error: self._capture_start_failed(error, session_id, generation),
+        )
+
+    def _create_capture_resources(
+        self, use_realtime: bool | None = None
+    ) -> CaptureStartupResult:
+        config = self.config.section("asr")
+        audio_config = dict(config)
+        audio_config.update(self.config.section("advanced"))
+        engine: AliyunRealtimeASR | None = None
+        audio: AudioCapture | None = None
+        if use_realtime is None:
+            use_realtime = self._uses_realtime_asr()
         try:
-            if self._uses_realtime_asr():
-                self._start_realtime_engine()
-            self._start_audio()
-        except Exception as exc:
-            self._fail_session(f"Could not start listening: {exc}")
+            if use_realtime:
+                key = self.secrets.get(SecretStore.key_for("asr", "aliyun_realtime"))
+                engine = AliyunRealtimeASR(config, key)
+                engine.start()
+            audio = AudioCapture(audio_config)
+            if engine is not None:
+                audio.set_chunk_consumer(engine.send_audio)
+            audio.start()
+            target_thread = self.thread()
+            audio.moveToThread(target_thread)
+            if engine is not None:
+                engine.moveToThread(target_thread)
+            return CaptureStartupResult(audio, engine)
+        except Exception:
+            if audio is not None:
+                audio.discard()
+            if engine is not None:
+                self._quiet_stop_realtime(engine)
+            raise
+
+    def _capture_started(
+        self,
+        result: CaptureStartupResult,
+        session_id: str,
+        generation: int,
+    ) -> None:
+        if (
+            generation != self._generation
+            or not self._session
+            or self._session.id != session_id
+            or self._session.state != SessionState.ARMED
+        ):
+            self.executor.submit(self._cleanup_capture_resources, result)
             return
+        self._attach_capture_resources(result, session_id)
+        self._session.transition(SessionState.LISTENING)
+        self._segment_start_ms = self._session.elapsed_ms()
         self.clipboard_watcher.start()
         interval = max(800, int(float(self.config.get("asr.partial_interval_s", 2.5)) * 1000))
         if not self._uses_realtime_asr() and self.config.get("asr.streaming_partial", True):
@@ -258,50 +360,68 @@ class VoiceContextController(QObject):
         self._update_state_ui()
         self.overlay.set_session_timeline(self._session)
         self.overlay.set_state("Listening")
+        if self._finish_when_ready:
+            self._finish_when_ready = False
+            QTimer.singleShot(0, self.finish_session)
 
-    def _start_audio(self) -> None:
+    def _attach_capture_resources(
+        self, result: CaptureStartupResult, session_id: str
+    ) -> None:
         self._audio_generation += 1
-        audio_config = self.config.section("asr")
-        audio_config.update(self.config.section("advanced"))
-        self._audio = AudioCapture(audio_config)
+        self._audio = result.audio
+        self._realtime_engine = result.realtime_engine
+        self._realtime_closing = False
         self._audio.level_changed.connect(self.overlay.set_level)
         self._audio.error.connect(self._audio_error)
-        if self._uses_realtime_asr():
-            if self._realtime_engine is None:
-                raise RuntimeError("Aliyun realtime ASR is not connected.")
-            self._audio.set_chunk_consumer(self._realtime_engine.send_audio)
+        if self._realtime_engine is not None:
+            engine = self._realtime_engine
+            engine.transcript_updated.connect(
+                lambda text, current=engine, sid=session_id: self._realtime_transcript(
+                    current, sid, text
+                )
+            )
+            engine.error.connect(
+                lambda message, current=engine, sid=session_id: self._realtime_error(
+                    current, sid, message
+                )
+            )
         else:
             self._audio.silence_detected.connect(self._silence_split)
-        self._audio.start()
-        if self._session:
-            self._segment_start_ms = self._session.elapsed_ms()
+
+    def _capture_start_failed(self, error: str, session_id: str, generation: int) -> None:
+        if (
+            generation == self._generation
+            and self._session
+            and self._session.id == session_id
+            and self._session.state == SessionState.ARMED
+        ):
+            self._fail_session(f"Could not start listening: {error}")
+
+    @staticmethod
+    def _cleanup_capture_resources(result: CaptureStartupResult) -> None:
+        result.audio.discard()
+        if result.realtime_engine is not None:
+            VoiceContextController._quiet_stop_realtime(result.realtime_engine)
+
+    def _notify_busy(self) -> None:
+        if not self._session or self._session.state not in {SessionState.ARMED, SessionState.COMPOSING}:
+            return
+        now = time.monotonic()
+        if now - self._busy_notice_at < 0.8:
+            return
+        self._busy_notice_at = now
+        detail = (
+            "Starting the microphone..."
+            if self._session.state == SessionState.ARMED
+            else "A prompt is being generated. Use the cancel shortcut to discard it."
+        )
+        self.overlay.set_state(self._session.state.value, detail)
 
     def _audio_error(self, message: str) -> None:
         if message.startswith("Realtime audio delivery failed"):
             self._fail_session(message)
         else:
             LOG.warning("Audio stream: %s", message)
-
-    def _start_realtime_engine(self) -> None:
-        if not self._session:
-            raise RuntimeError("No active session for realtime ASR.")
-        config = self.config.section("asr")
-        key = self.secrets.get(SecretStore.key_for("asr", "aliyun_realtime"))
-        engine = AliyunRealtimeASR(config, key)
-        session_id = self._session.id
-        engine.transcript_updated.connect(
-            lambda text, current=engine, sid=session_id: self._realtime_transcript(
-                current, sid, text
-            )
-        )
-        engine.error.connect(
-            lambda message, current=engine, sid=session_id: self._realtime_error(
-                current, sid, message
-            )
-        )
-        engine.start()
-        self._realtime_engine = engine
-        self._realtime_closing = False
 
     def _realtime_transcript(
         self, engine: AliyunRealtimeASR, session_id: str, text: str
@@ -336,22 +456,22 @@ class VoiceContextController(QObject):
             return
         # The snapshot belongs to the segment that is about to be closed; allow the next segment to stream independently.
         self._partial_inflight = False
-        self._stop_and_submit_segment()
-        try:
-            self._start_audio()
-        except Exception as exc:
-            self._fail_session(f"Could not continue after silence: {exc}")
+        self._stop_and_submit_segment(restart_after=True)
 
     def toggle_session(self) -> None:
         if self._session and self._session.state in {SessionState.LISTENING, SessionState.PAUSED}:
             self.finish_session()
         elif not self.active:
             self.start_session()
+        else:
+            self._notify_busy()
 
     def _hold_start(self) -> None:
         self._hold_owns_session = not self.active
         if self._hold_owns_session:
             self.start_session()
+        else:
+            self._notify_busy()
 
     def _hold_release(self) -> None:
         if self._hold_owns_session:
@@ -371,29 +491,66 @@ class VoiceContextController(QObject):
             self.overlay.set_session_timeline(self._session)
             self.overlay.set_state("Paused")
         elif self._session.state == SessionState.PAUSED:
+            if self._resume_inflight:
+                self.overlay.set_state("Paused", "Restarting the microphone...")
+                return
             if self._uses_realtime_asr() and self._realtime_closing:
                 self.overlay.set_state("Paused", "Finalizing the previous speech segment...")
                 return
-            try:
-                if self._uses_realtime_asr():
-                    self._start_realtime_engine()
-                self._start_audio()
-            except Exception as exc:
-                self._fail_session(f"Could not resume the microphone: {exc}")
-                return
-            self._session.transition(SessionState.LISTENING)
-            if not self._uses_realtime_asr() and self.config.get("asr.streaming_partial", True):
-                self.partial_timer.start(
-                    max(800, int(float(self.config.get("asr.partial_interval_s", 2.5)) * 1000))
-                )
-            self.overlay.set_session_timeline(self._session)
-            self.overlay.set_state("Listening")
+            self._resume_inflight = True
+            session_id = self._session.id
+            generation = self._generation
+            self.overlay.set_state("Paused", "Restarting the microphone...")
+            self._submit(
+                self._create_capture_resources,
+                lambda result: self._capture_resumed(result, session_id, generation),
+                lambda error: self._capture_resume_failed(error, session_id, generation),
+            )
         self._update_state_ui()
 
+    def _capture_resumed(
+        self, result: CaptureStartupResult, session_id: str, generation: int
+    ) -> None:
+        if (
+            generation != self._generation
+            or not self._session
+            or self._session.id != session_id
+            or self._session.state != SessionState.PAUSED
+        ):
+            self.executor.submit(self._cleanup_capture_resources, result)
+            return
+        self._resume_inflight = False
+        self._attach_capture_resources(result, session_id)
+        self._session.transition(SessionState.LISTENING)
+        self._segment_start_ms = self._session.elapsed_ms()
+        if not self._uses_realtime_asr() and self.config.get("asr.streaming_partial", True):
+            self.partial_timer.start(
+                max(800, int(float(self.config.get("asr.partial_interval_s", 2.5)) * 1000))
+            )
+        self._update_state_ui()
+        self.overlay.set_session_timeline(self._session)
+        self.overlay.set_state("Listening")
+
+    def _capture_resume_failed(self, error: str, session_id: str, generation: int) -> None:
+        if (
+            generation == self._generation
+            and self._session
+            and self._session.id == session_id
+            and self._session.state == SessionState.PAUSED
+        ):
+            self._resume_inflight = False
+            self._fail_session(f"Could not resume the microphone: {error}")
+
     def finish_session(self) -> None:
+        if self._session and self._session.state == SessionState.ARMED:
+            self._finish_when_ready = True
+            self.overlay.set_state("Armed", "Finishing as soon as the microphone is ready...")
+            return
         if not self._session or self._session.state not in {SessionState.LISTENING, SessionState.PAUSED}:
+            self._notify_busy()
             return
         self._generation += 1
+        self._resume_inflight = False
         self.partial_timer.stop()
         self.elapsed_timer.stop()
         self.clipboard_watcher.stop()
@@ -414,21 +571,20 @@ class VoiceContextController(QObject):
         if not self._session or not self.active:
             return
         self._generation += 1
+        self._resume_inflight = False
         self.partial_timer.stop()
         self.elapsed_timer.stop()
         self.clipboard_watcher.stop()
-        if self._audio:
-            if self._uses_realtime_asr():
-                self._audio.stop_stream()
-            self._audio.discard()
-            self._audio = None
+        audio, self._audio = self._audio, None
         engine, self._realtime_engine = self._realtime_engine, None
-        if engine is not None:
-            self._submit(
-                engine.stop,
-                lambda _: None,
-                lambda error: LOG.warning("Could not cancel realtime ASR: %s", error),
-            )
+        if audio is not None or engine is not None:
+            def cleanup_cancelled_capture() -> None:
+                if audio is not None:
+                    audio.discard()
+                if engine is not None:
+                    self._quiet_stop_realtime(engine)
+
+            self.executor.submit(cleanup_cancelled_capture)
         self._realtime_closing = False
         self._session = VoiceSession()
         self.main.set_session(self._session)
@@ -436,19 +592,24 @@ class VoiceContextController(QObject):
         self.overlay.set_state("Idle", "Session cancelled")
 
     def _stop_realtime_capture(self) -> None:
-        if self._audio:
-            audio, self._audio = self._audio, None
-            audio.stop_stream()
-            audio.discard()
+        audio, self._audio = self._audio, None
         engine, self._realtime_engine = self._realtime_engine, None
         if engine is None:
+            if audio is not None:
+                self.executor.submit(audio.discard)
             return
         self._pending_segments += 1
         self._realtime_closing = True
         session_id = self._session.id if self._session else ""
         start_ms = self._segment_start_ms
+
+        def finalize_realtime() -> RealtimeRecognitionResult:
+            if audio is not None:
+                audio.discard()
+            return engine.stop()
+
         self._submit(
-            engine.stop,
+            finalize_realtime,
             lambda result: self._realtime_stopped(result, session_id, start_ms),
             lambda error: self._realtime_stop_failed(error, session_id),
         )
@@ -510,23 +671,71 @@ class VoiceContextController(QObject):
         self._realtime_closing = False
         self._fail_session(f"Aliyun realtime ASR failed: {error}")
 
-    def _stop_and_submit_segment(self) -> None:
+    def _stop_and_submit_segment(self, restart_after: bool = False) -> None:
         if not self._audio:
             return
         audio = self._audio
         self._audio = None
         end_ms = self._session.elapsed_ms() if self._session else self._segment_start_ms
-        try:
-            path = audio.stop()
-        except Exception as exc:
-            self._asr_warnings.append(f"Could not finalize audio: {exc}")
-            return
-        if audio.duration_ms < 120:
-            self._cleanup_audio(path)
-            return
         start_ms = self._segment_start_ms
         self._pending_segments += 1
         session_id = self._session.id if self._session else ""
+
+        def finalize_audio():
+            path: Path | None = None
+            duration_ms = 0
+            try:
+                path = audio.stop()
+                duration_ms = audio.duration_ms
+                return path, duration_ms, ""
+            except Exception as exc:
+                return path, duration_ms, str(exc)
+
+        self._submit(
+            finalize_audio,
+            lambda payload: self._segment_audio_finalized(
+                payload,
+                start_ms,
+                end_ms,
+                session_id,
+                restart_after,
+            ),
+            lambda error: self._segment_audio_finalize_failed(
+                error, session_id, restart_after
+            ),
+        )
+
+    def _segment_audio_finalized(
+        self,
+        payload: tuple[Path | None, int, str],
+        start_ms: int,
+        end_ms: int,
+        session_id: str,
+        restart_after: bool,
+    ) -> None:
+        path, duration_ms, error = payload
+        if not self._session or self._session.id != session_id:
+            if path is not None:
+                self._cleanup_audio(path)
+            return
+        if restart_after and self._session.state == SessionState.LISTENING:
+            self._restart_capture_after_silence(session_id)
+        if error:
+            if path is not None:
+                self._cleanup_audio(path)
+            self._pending_segments = max(0, self._pending_segments - 1)
+            self._asr_warnings.append(error)
+            self._session.asr_metadata.update({"status": "failed", "error": error})
+            if self._compose_when_ready and self._pending_segments == 0:
+                self._begin_compose()
+            return
+        if path is None or duration_ms < 120:
+            if path is not None:
+                self._cleanup_audio(path)
+            self._pending_segments = max(0, self._pending_segments - 1)
+            if self._compose_when_ready and self._pending_segments == 0:
+                self._begin_compose()
+            return
 
         def transcribe():
             started = time.perf_counter()
@@ -536,21 +745,64 @@ class VoiceContextController(QObject):
 
         self._submit(
             transcribe,
-            lambda payload: self._segment_done(
-                payload[0], start_ms, end_ms, path, session_id, payload[1]
+            lambda result: self._segment_transcribed(
+                result, start_ms, end_ms, path, session_id
             ),
-            lambda error: self._segment_failed(error, path, session_id),
+            lambda message: self._segment_transcription_failed(
+                message, path, session_id
+            ),
         )
 
-    def _segment_done(
+    def _restart_capture_after_silence(self, session_id: str) -> None:
+        generation = self._generation
+        self._submit(
+            lambda: self._create_capture_resources(False),
+            lambda result: self._capture_restarted_after_silence(
+                result, session_id, generation
+            ),
+            lambda error: self._capture_restart_failed(
+                error, session_id, generation
+            ),
+        )
+
+    def _capture_restarted_after_silence(
         self,
-        result,
+        result: CaptureStartupResult,
+        session_id: str,
+        generation: int,
+    ) -> None:
+        if (
+            generation != self._generation
+            or not self._session
+            or self._session.id != session_id
+            or self._session.state != SessionState.LISTENING
+            or self._audio is not None
+        ):
+            self.executor.submit(self._cleanup_capture_resources, result)
+            return
+        self._attach_capture_resources(result, session_id)
+        self._segment_start_ms = self._session.elapsed_ms()
+
+    def _capture_restart_failed(
+        self, error: str, session_id: str, generation: int
+    ) -> None:
+        if (
+            generation == self._generation
+            and self._session
+            and self._session.id == session_id
+            and self._session.state == SessionState.LISTENING
+        ):
+            self._fail_session(f"Could not continue after silence: {error}")
+
+    def _segment_transcribed(
+        self,
+        payload: tuple[Any, int],
         start_ms: int,
         end_ms: int,
         path: Path,
         session_id: str,
-        latency_ms: int = 0,
     ) -> None:
+        result, latency_ms = payload
         self._cleanup_audio(path)
         if not self._session or self._session.id != session_id:
             return
@@ -562,14 +814,29 @@ class VoiceContextController(QObject):
         self._session.asr_metadata.update(
             {
                 "status": "success",
-                "latency_ms": int(self._session.asr_metadata.get("latency_ms", 0)) + latency_ms,
+                "latency_ms": int(self._session.asr_metadata.get("latency_ms", 0))
+                + latency_ms,
                 "segment_count": int(self._session.asr_metadata.get("segment_count", 0)) + 1,
             }
         )
         if self._compose_when_ready and self._pending_segments == 0:
             self._begin_compose()
 
-    def _segment_failed(self, error: str, path: Path, session_id: str) -> None:
+    def _segment_audio_finalize_failed(
+        self, error: str, session_id: str, restart_after: bool
+    ) -> None:
+        if not self._session or self._session.id != session_id:
+            return
+        self._pending_segments = max(0, self._pending_segments - 1)
+        self._asr_warnings.append(error)
+        if restart_after and self._session.state == SessionState.LISTENING:
+            self._restart_capture_after_silence(session_id)
+        if self._compose_when_ready and self._pending_segments == 0:
+            self._begin_compose()
+
+    def _segment_transcription_failed(
+        self, error: str, path: Path, session_id: str
+    ) -> None:
         self._cleanup_audio(path)
         if not self._session or self._session.id != session_id:
             return
@@ -578,8 +845,6 @@ class VoiceContextController(QObject):
         self._session.asr_metadata.update({"status": "failed", "error": error})
         if self._compose_when_ready and self._pending_segments == 0:
             self._begin_compose()
-        elif self._session:
-            self.overlay.set_state(self._session.state.value, f"ASR warning: {error}")
 
     def _request_partial(self) -> None:
         if (
@@ -590,27 +855,43 @@ class VoiceContextController(QObject):
             or self._audio.duration_ms < 500
         ):
             return
-        try:
-            path = self._audio.snapshot()
-        except Exception as exc:
-            LOG.warning("Could not create partial audio snapshot: %s", exc)
-            return
         self._partial_inflight = True
         generation = self._generation
         audio_generation = self._audio_generation
+        audio = self._audio
 
-        def transcribe():
-            with self._asr_lock:
-                return self._engine().transcribe(path)
+        def snapshot_and_transcribe():
+            path: Path | None = None
+            try:
+                path = audio.snapshot()
+                with self._asr_lock:
+                    result = self._engine().transcribe(path)
+                return result, path, ""
+            except Exception as exc:
+                return None, path, str(exc)
 
         self._submit(
-            transcribe,
-            lambda result: self._partial_done(result, path, generation, audio_generation),
-            lambda error: self._partial_failed(error, path, generation, audio_generation),
+            snapshot_and_transcribe,
+            lambda payload: self._partial_snapshot_done(
+                payload, generation, audio_generation
+            ),
+            lambda error: self._partial_task_failed(error, generation, audio_generation),
         )
 
-    def _partial_done(self, result, path: Path, generation: int, audio_generation: int) -> None:
-        self._cleanup_audio(path)
+    def _partial_snapshot_done(
+        self,
+        payload: tuple[Any, Path | None, str],
+        generation: int,
+        audio_generation: int,
+    ) -> None:
+        result, path, error = payload
+        if path is not None:
+            self._cleanup_audio(path)
+        if generation == self._generation and audio_generation == self._audio_generation:
+            self._partial_inflight = False
+        if error:
+            LOG.warning("Streaming partial failed: %s", error)
+            return
         if (
             generation != self._generation
             or audio_generation != self._audio_generation
@@ -618,16 +899,16 @@ class VoiceContextController(QObject):
             or self._session.state != SessionState.LISTENING
         ):
             return
-        self._partial_inflight = False
         self._session.set_partial(result.text)
         self.main.update_transcript(self._session.transcript)
         self.overlay.set_session_timeline(self._session)
 
-    def _partial_failed(self, error: str, path: Path, generation: int, audio_generation: int) -> None:
-        self._cleanup_audio(path)
+    def _partial_task_failed(
+        self, error: str, generation: int, audio_generation: int
+    ) -> None:
         if generation == self._generation and audio_generation == self._audio_generation:
             self._partial_inflight = False
-        LOG.warning("Streaming partial failed: %s", error)
+        LOG.warning("Streaming partial task failed: %s", error)
 
     def _engine(self):
         if self._asr_engine is None:
@@ -922,6 +1203,7 @@ class VoiceContextController(QObject):
         if editable_session and text != editable_session.final_prompt:
             self._session.final_prompt = text
             self._session.output_metadata = {"status": "pending"}
+            self._save_session()
         self.clipboard_watcher.suppress_next_change()
         session_id = editable_session.id if editable_session else ""
 
@@ -1070,22 +1352,20 @@ class VoiceContextController(QObject):
             self._settings_window.raise_()
             self._settings_window.activateWindow()
             return
-        # Prevent an existing global binding from firing while the user records it.
-        self.hotkeys.unregister()
         window = SettingsWindow(self.config, self.secrets, self.main)
         self._settings_window = window
         window.saved.connect(self._settings_saved)
         window.clear_history_requested.connect(self._clear_history)
         window.test_asr_requested.connect(self._test_asr)
         window.test_llm_requested.connect(self._test_llm)
+        window.hotkeys_page_entered.connect(self.hotkeys.suspend)
+        window.hotkeys_page_exited.connect(self.hotkeys.resume)
         window.finished.connect(self._settings_closed)
         window.show()
 
     def _settings_closed(self, _result: int) -> None:
         self._settings_window = None
-        errors = self.hotkeys.register(self.config.section("hotkeys"))
-        if errors:
-            LOG.warning("Hotkey registration after closing settings: %s", "; ".join(errors))
+        self.hotkeys.resume()
 
     def _settings_saved(self) -> None:
         self._asr_engine = None
@@ -1144,17 +1424,36 @@ class VoiceContextController(QObject):
 
     def _show_hotkey_error(self, message: str) -> None:
         LOG.warning("Hotkey registration: %s", message)
+        self.main.statusBar().showMessage(f"Global hotkey issue: {message}")
+        QTimer.singleShot(
+            0,
+            lambda detail=message: self.tray.showMessage(
+                "VoiceContext hotkey issue",
+                detail[:500],
+                QSystemTrayIcon.MessageIcon.Warning,
+                7000,
+            ),
+        )
+
+    def _hotkey_registration_changed(self, results: list) -> None:
+        if results and all(result.success for result in results):
+            self.main.statusBar().clearMessage()
+
+    def _log_hotkey_action(self, action: str) -> None:
+        state = self._session.state.value if self._session else SessionState.IDLE.value
+        LOG.info("Global hotkey received: action=%s state=%s", action, state)
 
     def _fail_session(self, message: str) -> None:
         LOG.error("Session failed: %s", message)
         self.partial_timer.stop()
         self.elapsed_timer.stop()
         self.clipboard_watcher.stop()
-        if self._audio:
-            self._audio.discard()
-            self._audio = None
+        audio, self._audio = self._audio, None
+        if audio is not None:
+            self.executor.submit(audio.discard)
         engine, self._realtime_engine = self._realtime_engine, None
         self._realtime_closing = False
+        self._resume_inflight = False
         if engine is not None:
             self.executor.submit(self._quiet_stop_realtime, engine)
         if self._session:
@@ -1229,7 +1528,7 @@ class VoiceContextController(QObject):
             pass
 
     def shutdown(self) -> None:
-        self.hotkeys.unregister()
+        self.hotkeys.close()
         self.partial_timer.stop()
         self.elapsed_timer.stop()
         self.clipboard_watcher.stop()
@@ -1317,6 +1616,9 @@ def main() -> int:
     configure_logging(config)
     instance = SingleInstance.acquire()
     if instance is None:
+        if SingleInstance.last_error:
+            QMessageBox.critical(None, "VoiceContext could not start", SingleInstance.last_error)
+            return 1
         return 0
     controller = VoiceContextController(app, instance)
     app._voicecontext_controller = controller  # type: ignore[attr-defined]

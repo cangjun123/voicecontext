@@ -39,6 +39,8 @@ from .i18n import translate_widget_tree
 
 class SettingsWindow(QDialog):
     saved = Signal()
+    hotkeys_page_entered = Signal()
+    hotkeys_page_exited = Signal()
     test_asr_requested = Signal(object, str, str)
     test_llm_requested = Signal(object, str)
     clear_history_requested = Signal()
@@ -51,6 +53,7 @@ class SettingsWindow(QDialog):
         self.bindings: list[tuple[str, QWidget, Callable[[QWidget], Any]]] = []
         self.hotkey_status: dict[str, QLabel] = {}
         self.hotkey_edits: dict[str, HotkeyCaptureEdit] = {}
+        self._current_page = -1
         self.setWindowTitle("VoiceContext Settings")
         self.resize(940, 720)
         self.setMinimumSize(820, 600)
@@ -78,7 +81,7 @@ class SettingsWindow(QDialog):
         for name, builder in self._builders.items():
             self.nav.addItem(QListWidgetItem(name))
             self.pages.addWidget(self._scroll_page(name, builder()))
-        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.nav.currentRowChanged.connect(self._page_changed)
         self.nav.setCurrentRow(0)
         body.addWidget(self.nav)
         body.addWidget(self.pages, 1)
@@ -97,6 +100,20 @@ class SettingsWindow(QDialog):
         footer.addWidget(buttons)
         root.addLayout(footer)
         translate_widget_tree(self)
+
+    def _page_changed(self, index: int) -> None:
+        previous = self._current_page
+        if previous == 1 and index != 1:
+            self.hotkeys_page_exited.emit()
+        self._current_page = index
+        self.pages.setCurrentIndex(index)
+        if index == 1 and previous != 1:
+            self.hotkeys_page_entered.emit()
+            self.refresh_hotkey_validation()
+
+    def refresh_hotkey_validation(self) -> None:
+        for key, edit in self.hotkey_edits.items():
+            self._validate_hotkey(key, edit.text())
 
     def _scroll_page(self, name: str, content: QWidget) -> QScrollArea:
         wrapper = QWidget()

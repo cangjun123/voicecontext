@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import wave
+import time
+import threading
 from pathlib import Path
 
 import pytest
@@ -62,6 +64,11 @@ class FakeRealtimeAudio(FakeAudio):
 
     def stop_stream(self) -> None:
         pass
+
+
+class SlowStartAudio(FakeAudio):
+    def start(self) -> None:
+        time.sleep(0.25)
 
 
 class FakeRealtimeASR(QObject):
@@ -134,20 +141,29 @@ def test_controller_composes_and_saves_a_session(qtbot, qapp, monkeypatch, tmp_p
     monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
     monkeypatch.setattr(application, "set_startup", lambda enabled: None)
     monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
-    monkeypatch.setattr(application.VoiceContextController, "_start_audio", lambda self: setattr(self, "_audio", FakeAudio(tmp_path)))
+    monkeypatch.setattr(application, "AudioCapture", lambda config: FakeAudio(tmp_path))
     monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
 
     controller = application.VoiceContextController(qapp, FakeSingleInstance())
     controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
     assert controller._session.state.value == "Listening"
     controller.finish_session()
+    assert controller._session.state.value == "Composing"
+    controller.toggle_session()
+    assert controller._session.state.value == "Composing"
+    assert "being generated" in controller.overlay.transcript.text()
     qtbot.waitUntil(lambda: controller._session.state.value == "PromptReady", timeout=5000)
     assert "fake spoken task" in controller._session.final_prompt
     assert controller.history.recent(1)[0]["transcript"] == "fake spoken task"
+    pending_copies = []
+    controller.output.copy_verified = lambda text, callback: pending_copies.append((text, callback))
     controller.copy_prompt("edited prompt")
     assert controller._session.final_prompt == "edited prompt"
     assert controller.history.get(controller._session.id)["finalPrompt"] == "edited prompt"
-    assert qapp.clipboard().text() == "edited prompt"
+    assert pending_copies[0][0] == "edited prompt"
+    pending_copies[0][1](ClipboardWriteResult(True, 1))
+    assert controller.history.get(controller._session.id)["output"]["clipboard_verified"] is True
 
     pasted = []
     config.set("output.auto_paste", True)
@@ -176,7 +192,7 @@ def test_controller_reloads_config_and_records_llm_result(qtbot, qapp, monkeypat
     monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
     monkeypatch.setattr(application, "set_startup", lambda enabled: None)
     monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
-    monkeypatch.setattr(application.VoiceContextController, "_start_audio", lambda self: setattr(self, "_audio", FakeAudio(tmp_path)))
+    monkeypatch.setattr(application, "AudioCapture", lambda config: FakeAudio(tmp_path))
     monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
     monkeypatch.setattr(application, "LLMComposerClient", FakeLLMClient)
 
@@ -189,6 +205,7 @@ def test_controller_reloads_config_and_records_llm_result(qtbot, qapp, monkeypat
     settings_store.save()
 
     controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
     controller.finish_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "PromptReady", timeout=5000)
 
@@ -222,17 +239,14 @@ def test_controller_stops_on_empty_llm_response_without_overwriting_clipboard(
     monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
     monkeypatch.setattr(application, "set_startup", lambda enabled: None)
     monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
-    monkeypatch.setattr(
-        application.VoiceContextController,
-        "_start_audio",
-        lambda self: setattr(self, "_audio", FakeAudio(tmp_path)),
-    )
+    monkeypatch.setattr(application, "AudioCapture", lambda config: FakeAudio(tmp_path))
     monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
     monkeypatch.setattr(application, "LLMComposerClient", EmptyLLMClient)
     qapp.clipboard().setText("keep me")
 
     controller = application.VoiceContextController(qapp, FakeSingleInstance())
     controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
     controller.finish_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "Error", timeout=5000)
 
@@ -271,6 +285,7 @@ def test_controller_uses_true_realtime_asr_without_offline_transcription(
 
     controller = application.VoiceContextController(qapp, FakeSingleInstance())
     controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
     controller._realtime_engine.transcript_updated.emit("实时识别")
     assert controller._session.transcript == "实时识别"
     controller.finish_session()
@@ -279,4 +294,79 @@ def test_controller_uses_true_realtime_asr_without_offline_transcription(
     assert "实时识别成功。" in controller._session.final_prompt
     assert controller._session.asr_metadata["request_id"] == "request-1"
     assert controller._session.asr_metadata["first_package_delay_ms"] == 300
+    controller.shutdown()
+
+
+def test_slow_audio_start_does_not_block_the_gui_thread(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("asr.streaming_partial", False)
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", lambda values: SlowStartAudio(tmp_path))
+    monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    started = time.perf_counter()
+    controller.start_session()
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.1
+    assert controller._session.state == application.SessionState.ARMED
+    controller.finish_session()
+    assert controller._finish_when_ready is True
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.PROMPT_READY)
+    controller.shutdown()
+
+
+def test_silence_split_restarts_capture_before_transcription_finishes(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("asr.streaming_partial", False)
+    started = threading.Event()
+    release = threading.Event()
+    audio_instances = []
+
+    class BlockingASR:
+        def transcribe(self, path):
+            started.set()
+            release.wait(5)
+            return TranscriptionResult("first segment")
+
+    def create_audio(_config):
+        audio = FakeAudio(tmp_path)
+        audio_instances.append(audio)
+        return audio
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", create_audio)
+    monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: BlockingASR())
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.LISTENING)
+    first_audio = audio_instances[0]
+    try:
+        first_audio.silence_detected.emit()
+        qtbot.waitUntil(started.is_set, timeout=5000)
+        qtbot.waitUntil(
+            lambda: len(audio_instances) >= 2 and controller._audio is audio_instances[1],
+            timeout=5000,
+        )
+        assert controller._session.state == application.SessionState.LISTENING
+    finally:
+        release.set()
+    qtbot.waitUntil(lambda: controller._pending_segments == 0, timeout=5000)
+    assert controller._session.transcript == "first segment"
+    controller.cancel_session()
     controller.shutdown()

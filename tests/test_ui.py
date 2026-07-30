@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QSignalSpy
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from voice_context.core.session import SessionState, VoiceSession
 from voice_context.input.hotkeys import HotkeyManager
@@ -10,6 +12,7 @@ from voice_context.ui.main_window import MainWindow
 from voice_context.ui.overlay import OverlayWindow
 from voice_context.ui.i18n import set_language
 from voice_context.ui.settings_window import SettingsWindow
+from voice_context.ui.tray import TrayIcon
 
 
 class MemorySecrets:
@@ -199,3 +202,37 @@ def test_simplified_chinese_translation(qtbot) -> None:
     assert window.workspace_nav.text() == "工作台"
     assert window.start_button.text() == "开始"
     set_language("en")
+
+
+def test_tray_single_and_double_click_request_the_main_window(qtbot) -> None:
+    tray = TrayIcon()
+    spy = QSignalSpy(tray.show_requested)
+    tray._activated(QSystemTrayIcon.ActivationReason.Trigger)
+    tray._activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+    assert spy.count() == 2
+    tray.set_state("Armed")
+    assert tray.start_action.isEnabled() is False
+    tray.set_state("Composing")
+    assert tray.start_action.isEnabled() is False
+
+
+def test_main_window_is_moved_back_to_an_available_screen(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.move(12000, 9000)
+    window.show_normal()
+    assert any(
+        screen.availableGeometry().intersects(window.frameGeometry())
+        for screen in QApplication.screens()
+    )
+
+
+def test_settings_reports_entering_and_leaving_hotkeys_page(qtbot, tmp_path) -> None:
+    settings = SettingsWindow(ConfigStore(tmp_path / "config.json"), MemorySecrets())
+    qtbot.addWidget(settings)
+    entered = QSignalSpy(settings.hotkeys_page_entered)
+    exited = QSignalSpy(settings.hotkeys_page_exited)
+    settings.nav.setCurrentRow(1)
+    settings.nav.setCurrentRow(0)
+    assert entered.count() == 1
+    assert exited.count() == 1
