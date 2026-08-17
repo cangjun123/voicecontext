@@ -309,7 +309,9 @@ class MainWindow(QMainWindow):
         self.prompt_edit.setPlainText(text)
 
     def set_composer_status(self, metadata: dict, warning: str = "") -> None:
-        if metadata.get("used"):
+        if metadata.get("mode") == "direct_transcript":
+            self.context_label.setText(tr("Prompt ready from ASR transcript"))
+        elif metadata.get("used"):
             status_template = (
                 "Prompt ready via streaming LLM: {model} ({latency} ms)"
                 if metadata.get("streamed")
@@ -352,7 +354,9 @@ class MainWindow(QMainWindow):
         parts.append(tr("{count} references").format(count=len(session.references)))
 
         composer = session.composer_metadata
-        if composer.get("used"):
+        if composer.get("mode") == "direct_transcript":
+            parts.append(tr("ASR transcript"))
+        elif composer.get("used"):
             model = (
                 composer.get("response_model")
                 or composer.get("model")

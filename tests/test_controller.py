@@ -206,6 +206,7 @@ def test_controller_reloads_config_and_records_llm_result(qtbot, qapp, monkeypat
 
     controller.start_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
+    controller._session.add_reference("captured context")
     controller.finish_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "PromptReady", timeout=5000)
 
@@ -247,6 +248,7 @@ def test_controller_stops_on_empty_llm_response_without_overwriting_clipboard(
     controller = application.VoiceContextController(qapp, FakeSingleInstance())
     controller.start_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
+    controller._session.add_reference("captured context")
     controller.finish_session()
     qtbot.waitUntil(lambda: controller._session.state.value == "Error", timeout=5000)
 
@@ -257,6 +259,51 @@ def test_controller_stops_on_empty_llm_response_without_overwriting_clipboard(
     assert controller.overlay.status.text() == "Generation failed"
     stored = controller.history.get(controller._session.id)
     assert stored and stored["error"] == "LLM returned an empty task."
+    controller.shutdown()
+
+
+def test_controller_uses_plain_asr_transcript_without_references_or_llm(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("general.language", "en")
+    config.set("asr.streaming_partial", False)
+    config.set("llm.enabled", True)
+    config.set("prompt.target", "generic_markdown")
+    config.save()
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", lambda values: FakeAudio(tmp_path))
+    monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
+    monkeypatch.setattr(
+        application,
+        "LLMComposerClient",
+        lambda *_args, **_kwargs: pytest.fail("LLM must not be created without references"),
+    )
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.LISTENING)
+    controller.finish_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.PROMPT_READY)
+
+    assert controller._session.references == []
+    assert controller._session.final_prompt == "fake spoken task"
+    assert controller._session.composer_metadata == {
+        "requested": False,
+        "used": False,
+        "provider": "openai_compatible",
+        "model": "qwen2.5-coder",
+        "mode": "direct_transcript",
+        "skip_reason": "no_references",
+        "llm_configured": True,
+    }
+    assert "| ASR transcript |" in controller.main.context_label.text()
     controller.shutdown()
 
 

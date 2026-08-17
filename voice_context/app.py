@@ -930,7 +930,11 @@ class VoiceContextController(QObject):
         target = str(prompt_config.get("target", "codex_cli"))
         template = prompt_config.get("templates", {}).get(target, "")
         llm_config = self.config.section("llm")
-        use_llm = bool(llm_config.get("enabled")) and llm_config.get("provider") not in {"rules", "disabled"}
+        direct_transcript = not session.references and bool(session.transcript.strip())
+        llm_configured = bool(llm_config.get("enabled")) and llm_config.get(
+            "provider"
+        ) not in {"rules", "disabled"}
+        use_llm = llm_configured and not direct_transcript
         options = ComposeOptions(
             target=target,
             custom_template=template,
@@ -949,6 +953,18 @@ class VoiceContextController(QObject):
                 "provider": provider,
                 "model": str(llm_config.get("model", "")),
             }
+            if direct_transcript:
+                metadata.update(
+                    {
+                        "mode": "direct_transcript",
+                        "skip_reason": "no_references",
+                        "llm_configured": llm_configured,
+                    }
+                )
+                LOG.info(
+                    "Using the ASR transcript directly because the session has no references"
+                )
+                return PromptComposeResult(session.transcript.strip(), warning, metadata)
             if use_llm:
                 key = self.secrets.get(SecretStore.key_for("llm", provider))
                 client = LLMComposerClient(llm_config, key)

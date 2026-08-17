@@ -65,6 +65,9 @@ def test_main_window_shows_actual_llm_model_and_fallback(qtbot) -> None:
     assert window.context_label.text() == "LLM failed"
     assert window.context_label.toolTip() == "timed out"
 
+    window.set_composer_status({"mode": "direct_transcript"})
+    assert window.context_label.text() == "Prompt ready from ASR transcript"
+
 
 def test_main_window_shows_full_completion_receipt(qtbot) -> None:
     set_language("en")
@@ -88,6 +91,14 @@ def test_main_window_shows_full_completion_receipt(qtbot) -> None:
     assert window.context_label.text() == (
         "ASR fun-asr-realtime: succeeded | 1 references | "
         "LLM deepseek 250 ms 100->20 token | Clipboard verified"
+    )
+
+    session.composer_metadata = {"mode": "direct_transcript"}
+    session.remove_reference("ref_1")
+    window.set_completion_receipt(session)
+    assert window.context_label.text() == (
+        "ASR fun-asr-realtime: succeeded | 0 references | "
+        "ASR transcript | Clipboard verified"
     )
 
 
