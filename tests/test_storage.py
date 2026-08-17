@@ -41,6 +41,35 @@ def test_config_reload_reads_changes_saved_by_another_instance(tmp_path) -> None
     assert running_store.get("llm.enabled") is True
 
 
+def test_config_migrates_legacy_local_asr_to_remote_api(tmp_path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "asr": {
+                    "provider": "funasr",
+                    "model": "paraformer-zh",
+                    "model_path": "C:/models/paraformer",
+                    "device": "cuda",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = ConfigStore(path)
+
+    assert store.get("asr.provider") == "openai_compatible"
+    assert store.get("asr.model") == "whisper-1"
+    assert store.get("asr.base_url") == "https://api.openai.com/v1"
+    assert "model_path" not in store.section("asr")
+    assert "device" not in store.section("asr")
+    store.save()
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert "model_path" not in persisted["asr"]
+    assert "device" not in persisted["asr"]
+
+
 def test_session_store_crud_and_cleanup(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.sqlite3")
     payload = {

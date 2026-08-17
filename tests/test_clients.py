@@ -6,6 +6,7 @@ import pytest
 
 from voice_context.asr.api_engine import APIASREngine
 from voice_context.asr.base import ASRError
+from voice_context.asr.factory import create_asr_engine
 from voice_context.core.events import ReferenceEvent
 from voice_context.llm.client import LLMComposerClient
 
@@ -46,6 +47,12 @@ class FakeStreamResponse:
                 yield "data: [DONE]"
             else:
                 yield f"data: {json.dumps(event)}"
+
+
+@pytest.mark.parametrize("provider", ["funasr", "faster_whisper"])
+def test_local_asr_providers_are_not_supported(provider: str) -> None:
+    with pytest.raises(ASRError, match="Unsupported ASR provider"):
+        create_asr_engine({"provider": provider})
 
 
 def test_asr_openai_request_and_nested_response(monkeypatch, tmp_path) -> None:

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from voice_context.asr.providers import normalize_remote_asr_config
 from voice_context.core.templates import DEFAULT_TEMPLATES
 
 
@@ -38,11 +39,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "asr": {
         "provider": "openai_compatible",
         "model": "whisper-1",
-        "model_path": "",
         "base_url": "https://api.openai.com/v1",
         "language": "zh",
         "sample_rate": 16000,
-        "device": "cpu",
         "input_device": "",
         "vad": True,
         "silence_threshold": 0.012,
@@ -127,6 +126,15 @@ def deep_merge(defaults: dict[str, Any], values: dict[str, Any]) -> dict[str, An
     return result
 
 
+def normalize_config(data: dict[str, Any]) -> dict[str, Any]:
+    asr = data.setdefault("asr", {})
+    if not isinstance(asr, dict):
+        data["asr"] = copy.deepcopy(DEFAULT_CONFIG["asr"])
+    else:
+        normalize_remote_asr_config(asr)
+    return data
+
+
 class ConfigStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or APP_DIR / "config.json"
@@ -140,7 +148,7 @@ class ConfigStore:
             values = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(values, dict):
                 raise ValueError("configuration root must be an object")
-            return deep_merge(DEFAULT_CONFIG, values)
+            return normalize_config(deep_merge(DEFAULT_CONFIG, values))
         except (OSError, ValueError, json.JSONDecodeError):
             broken = self.path.with_suffix(".broken.json")
             try:
@@ -150,6 +158,7 @@ class ConfigStore:
             return copy.deepcopy(DEFAULT_CONFIG)
 
     def save(self) -> None:
+        normalize_config(self.data)
         temp = self.path.with_suffix(".tmp")
         temp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(self.path)

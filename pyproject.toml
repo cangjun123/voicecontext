@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voicecontext"
-version = "0.1.1"
+version = "0.2.0"
 description = "Windows voice and clipboard context composer for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,12 +19,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-whisper = ["faster-whisper>=1.0"]
-funasr = [
-  "funasr-onnx>=0.4.1",
-  "jieba>=0.42.1",
-  "torch>=2.3",
-]
 dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.5", "pyinstaller>=6"]
 
 [project.gui-scripts]

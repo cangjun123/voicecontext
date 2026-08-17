@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,41 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import QObject, Signal
 
 from .base import ASRError, TranscriptionResult
+
+
+def load_wav_as_pcm(audio_path: Path, target_rate: int) -> tuple[bytes, float]:
+    """Load a PCM WAV for the remote realtime endpoint without ML/audio libraries."""
+    try:
+        with wave.open(str(audio_path), "rb") as source:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            source_rate = source.getframerate()
+            frames = source.readframes(source.getnframes())
+    except (OSError, wave.Error) as exc:
+        raise ASRError(f"ASR test audio must be an uncompressed PCM WAV file: {exc}") from exc
+
+    if not frames:
+        return b"", 0.0
+    if channels == 1 and sample_width == 2 and source_rate == target_rate:
+        return frames, len(frames) / (target_rate * 2)
+    if channels not in {1, 2} or sample_width not in {1, 2, 3, 4}:
+        raise ASRError("ASR test WAV must use mono/stereo PCM with 8, 16, 24, or 32-bit samples.")
+
+    try:
+        import audioop
+    except ImportError as exc:  # pragma: no cover - Python 3.13+ fallback path
+        raise ASRError(
+            f"ASR test WAV must be mono, 16-bit, and {target_rate} Hz on this Python version."
+        ) from exc
+    if sample_width == 1:
+        frames = audioop.bias(frames, 1, -128)
+    if channels == 2:
+        frames = audioop.tomono(frames, sample_width, 0.5, 0.5)
+    if sample_width != 2:
+        frames = audioop.lin2lin(frames, sample_width, 2)
+    if source_rate != target_rate:
+        frames = audioop.ratecv(frames, 2, 1, source_rate, target_rate, None)[0]
+    return frames, len(frames) / (target_rate * 2)
 
 
 def normalize_websocket_url(value: str) -> str:
@@ -210,17 +246,10 @@ class AliyunRealtimeASR(QObject):
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         """Exercise the same realtime endpoint with an audio file for Settings diagnostics."""
-        try:
-            import librosa
-            import numpy as np
-        except ImportError as exc:
-            raise ASRError("Audio test conversion requires librosa and numpy.") from exc
-        waveform, _ = librosa.load(
-            str(audio_path), sr=int(self.config.get("sample_rate", 16000)), mono=True
-        )
-        pcm = (np.clip(waveform, -1, 1) * 32767).astype("<i2").tobytes()
+        sample_rate = int(self.config.get("sample_rate", 16000))
+        pcm, duration_s = load_wav_as_pcm(audio_path, sample_rate)
         self.start()
-        chunk_bytes = max(640, int(self.config.get("sample_rate", 16000)) // 10 * 2)
+        chunk_bytes = max(640, sample_rate // 10 * 2)
         try:
             for offset in range(0, len(pcm), chunk_bytes):
                 self.send_audio(pcm[offset : offset + chunk_bytes])
@@ -236,7 +265,7 @@ class AliyunRealtimeASR(QObject):
         return TranscriptionResult(
             text=result.text,
             language=str(self.config.get("language", "")),
-            duration_s=len(waveform) / max(1, int(self.config.get("sample_rate", 16000))),
+            duration_s=duration_s,
             segments=[
                 {
                     "text": segment["text"],

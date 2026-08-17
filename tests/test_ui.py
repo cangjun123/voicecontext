@@ -162,6 +162,28 @@ def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
     ]
     assert isinstance(window.hotkey_edits["toggle_listening"], HotkeyCaptureEdit)
     assert all(path != "output.show_preview" for path, _, _ in window.bindings)
+    providers = [
+        window.asr_provider.itemData(index)
+        for index in range(window.asr_provider.count())
+    ]
+    assert providers == ["aliyun_realtime", "openai_compatible", "custom_api"]
+    bound_paths = {path for path, _, _ in window.bindings}
+    assert "asr.model_path" not in bound_paths
+    assert "asr.device" not in bound_paths
+
+
+def test_settings_switches_between_remote_asr_defaults(qtbot, tmp_path) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    window = SettingsWindow(config, MemorySecrets())
+    qtbot.addWidget(window)
+
+    window.asr_provider.setCurrentIndex(window.asr_provider.findData("aliyun_realtime"))
+    assert window.asr_model.text() == "fun-asr-realtime"
+    assert window.asr_base_url.text() == "https://dashscope.aliyuncs.com/api/v1"
+
+    window.asr_provider.setCurrentIndex(window.asr_provider.findData("openai_compatible"))
+    assert window.asr_model.text() == "whisper-1"
+    assert window.asr_base_url.text() == "https://api.openai.com/v1"
 
 
 def test_hotkey_capture_records_pressed_combination(qtbot) -> None:

@@ -1,18 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-
 hiddenimports = [
     "keyring.backends.Windows",
     "sounddevice",
     "keyboard",
     "mouse",
+    "dashscope.audio.asr",
 ]
-for optional_package in ("faster_whisper", "funasr", "funasr_onnx", "jieba", "dashscope"):
-    try:
-        hiddenimports += collect_submodules(optional_package)
-    except Exception:
-        pass
+
+local_asr_excludes = [
+    "av",
+    "ctranslate2",
+    "faster_whisper",
+    "funasr",
+    "funasr_onnx",
+    "jieba",
+    "librosa",
+    "llvmlite",
+    "numba",
+    "onnxruntime",
+    "scipy",
+    "sklearn",
+    "torch",
+    "torchaudio",
+    "torchvision",
+]
 
 a = Analysis(
     ["launcher.py"],
@@ -23,7 +35,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=local_asr_excludes,
     noarchive=False,
     optimize=1,
 )

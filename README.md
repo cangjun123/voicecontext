@@ -33,6 +33,7 @@ VoiceContext 会记录每次复制的毫秒时间、复制时的实时转写快�
 ## 主要能力
 
 - 阿里云百炼 Fun-ASR 实时 WebSocket 识别，边说边出字
+- 支持 OpenAI 兼容转写接口和自定义远程 ASR API
 - 语音会话期间自动捕获文本、代码、错误、路径和 URL
 - 在实时转写中用 `[1]`、`[2]` 标出每次复制发生的位置
 - 按复制时间和实时转写快照消解重复指代
@@ -75,7 +76,7 @@ python -m voice_context
 
 ## 阿里云百炼实时 ASR
 
-在 ASR 设置中选择“阿里云百炼实时识别（WebSocket）”，模型填写 `fun-asr-realtime`。程序会将麦克风的 16 kHz 单声道 PCM 音频直接发送到实时接口，不再运行本地模型复核。
+在 ASR 设置中选择“阿里云百炼实时识别（WebSocket）”，模型填写 `fun-asr-realtime`。程序会将麦克风的 16 kHz 单声道 PCM 音频直接发送到实时接口。
 
 北京地域的百炼工作空间地址可以使用以下任一形式：
 
@@ -93,29 +94,14 @@ wss://workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference
 
 设置中的热词表 ID 是阿里云词表资源 ID，不是本地逗号分隔的热词列表。
 
-## 可选本地语音引擎
+## 远程 ASR
 
-安装 faster-whisper：
+VoiceContext 仅支持远程 ASR，不会加载或运行本地语音模型。除阿里云百炼实时 WebSocket 外，还可以选择：
 
-```powershell
-python -m pip install -e ".[whisper]"
-```
+- OpenAI 兼容转写 API：向 `{base_url}/audio/transcriptions` 上传 WAV 录音。
+- 自定义 ASR API：支持直接配置以 `/transcribe`、`/transcription` 或 `/audio/transcriptions` 结尾的接口地址。
 
-安装本地 FunASR / Paraformer：
-
-```powershell
-python -m pip install -e ".[funasr]"
-# 或
-.\install.ps1 -WithFunASR
-```
-
-ModelScope ONNX 模型路径既可以指向具体的 Paraformer 目录，也可以指向其 `iic` 父目录，例如：
-
-```text
-C:\Users\you\.cache\modelscope\hub\models\iic
-```
-
-程序会自动寻找匹配的中英文 Paraformer，以及同级 FSMN VAD 和标点模型。
+从旧版本升级时，如果原配置使用本地 FunASR 或 faster-whisper，程序会自动迁移到 OpenAI 兼容远程转写配置。请在“设置 > ASR”中确认 API 地址、模型和密钥。
 
 ## 测试
 
@@ -136,4 +122,12 @@ ruff check voice_context tests tools
 dist\VoiceContext\VoiceContext.exe
 ```
 
-PyInstaller 只会打包构建环境中已经安装的可选本地语音引擎。远程 ASR 和 LLM 功能不依赖这些本地模型。
+PyInstaller 配置会明确排除 FunASR、faster-whisper、Torch、ONNX Runtime 等本地模型运行时，避免构建环境中残留的机器学习依赖进入发布包。
+
+需要单文件版本时运行：
+
+```powershell
+.\build-onefile.ps1
+```
+
+生成文件位于 `dist\VoiceContext.exe`。单文件版启动时会将 Qt 和运行时依赖解压到系统临时目录，因此首次启动通常比目录版稍慢。

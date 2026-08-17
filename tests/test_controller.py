@@ -307,7 +307,7 @@ def test_controller_uses_plain_asr_transcript_without_references_or_llm(
     controller.shutdown()
 
 
-def test_controller_uses_true_realtime_asr_without_offline_transcription(
+def test_controller_uses_true_realtime_asr_without_file_upload_transcription(
     qtbot, qapp, monkeypatch, tmp_path
 ) -> None:
     config = ConfigStore(tmp_path / "config.json")
@@ -327,7 +327,7 @@ def test_controller_uses_true_realtime_asr_without_offline_transcription(
     monkeypatch.setattr(
         application.VoiceContextController,
         "_engine",
-        lambda self: pytest.fail("offline ASR must not run for Aliyun realtime provider"),
+        lambda self: pytest.fail("file-upload ASR must not run for Aliyun realtime provider"),
     )
 
     controller = application.VoiceContextController(qapp, FakeSingleInstance())

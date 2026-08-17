@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import wave
+
 import pytest
 
-from voice_context.asr.aliyun_realtime import AliyunRealtimeASR, normalize_websocket_url
+from voice_context.asr.aliyun_realtime import (
+    AliyunRealtimeASR,
+    load_wav_as_pcm,
+    normalize_websocket_url,
+)
 from voice_context.asr.base import ASRError
 
 
@@ -55,3 +61,18 @@ def test_realtime_events_replace_partial_and_accumulate_finals(qtbot) -> None:
 def test_realtime_requires_api_key() -> None:
     with pytest.raises(ASRError, match="API key is empty"):
         AliyunRealtimeASR({}, "").start()
+
+
+def test_realtime_test_audio_uses_pcm_wav_without_ml_dependencies(tmp_path) -> None:
+    path = tmp_path / "test.wav"
+    frames = b"\x01\x00" * 1600
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(16000)
+        output.writeframes(frames)
+
+    pcm, duration_s = load_wav_as_pcm(path, 16000)
+
+    assert pcm == frames
+    assert duration_s == pytest.approx(0.1)

@@ -261,15 +261,13 @@ class SettingsWindow(QDialog):
         page, form = self._form_page()
         self.asr_provider = self._combo("asr.provider", [
             ("aliyun_realtime", "Aliyun Model Studio realtime (WebSocket)"),
-            ("funasr", "Local FunASR / Paraformer"),
-            ("faster_whisper", "Local faster-whisper"),
             ("openai_compatible", "OpenAI-compatible transcription API"),
             ("custom_api", "Custom ASR API"),
         ])
         form.addRow("Provider", self.asr_provider)
+        form.addRow("", self._note("Voice audio is sent only to the configured remote ASR provider."))
         self.asr_model = self._line("asr.model")
         form.addRow("Model name", self.asr_model)
-        form.addRow("Local model path", self._line("asr.model_path", placeholder="Optional model directory"))
         self.asr_base_url = self._line("asr.base_url")
         form.addRow("API base URL", self.asr_base_url)
         self.asr_key = self._secret_line("asr")
@@ -277,7 +275,6 @@ class SettingsWindow(QDialog):
         form.addRow("API key", self.asr_key)
         form.addRow("Language", self._line("asr.language", placeholder="zh, en, or blank for auto"))
         form.addRow("Sample rate", self._spin("asr.sample_rate", 8000, 96000, " Hz"))
-        form.addRow("Compute device", self._combo("asr.device", [("cpu", "CPU"), ("cuda", "CUDA")]))
         form.addRow("Input device", self._line("asr.input_device", placeholder="Blank uses the Windows default"))
         form.addRow("Voice activity detection", self._check("asr.vad"))
         form.addRow("Silence threshold", self._double("asr.silence_threshold", 0.001, 0.2, 0.001, 3))
@@ -300,13 +297,19 @@ class SettingsWindow(QDialog):
 
     def _asr_provider_changed(self) -> None:
         self._load_provider_secret("asr", self.asr_provider, self.asr_key)
-        if self.asr_provider.currentData() != "aliyun_realtime":
-            return
-        if self.asr_model.text().strip() in {"", "whisper-1"}:
-            self.asr_model.setText("fun-asr-realtime")
+        provider = self.asr_provider.currentData()
+        model = self.asr_model.text().strip()
         current_url = self.asr_base_url.text().strip()
-        if not current_url or current_url == "https://api.openai.com/v1":
-            self.asr_base_url.setText("https://dashscope.aliyuncs.com/api/v1")
+        if provider == "aliyun_realtime":
+            if model in {"", "whisper-1"}:
+                self.asr_model.setText("fun-asr-realtime")
+            if not current_url or current_url == "https://api.openai.com/v1":
+                self.asr_base_url.setText("https://dashscope.aliyuncs.com/api/v1")
+        elif provider == "openai_compatible":
+            if model in {"", "fun-asr-realtime"}:
+                self.asr_model.setText("whisper-1")
+            if not current_url or current_url == "https://dashscope.aliyuncs.com/api/v1":
+                self.asr_base_url.setText("https://api.openai.com/v1")
 
     def _llm_page(self) -> QWidget:
         page, form = self._form_page()
@@ -501,7 +504,9 @@ class SettingsWindow(QDialog):
         if not valid:
             QMessageBox.warning(self, "Invalid settings", message)
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Choose test audio", str(Path.home()), "Audio files (*.wav *.mp3 *.m4a *.flac)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose test audio", str(Path.home()), "WAV audio (*.wav)"
+        )
         if path:
             self.test_asr_requested.emit(copy.deepcopy(self.values["asr"]), self.asr_key.text().strip(), path)
 
