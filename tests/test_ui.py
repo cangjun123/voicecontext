@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from voice_context.core.session import SessionState, VoiceSession
 from voice_context.input.hotkeys import HotkeyManager
@@ -197,6 +199,91 @@ def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
     bound_paths = {path for path, _, _ in window.bindings}
     assert "asr.model_path" not in bound_paths
     assert "asr.device" not in bound_paths
+
+
+def test_settings_export_and_import_round_trip(qtbot, tmp_path, monkeypatch) -> None:
+    set_language("en")
+    # Hotkey availability depends on whatever else is running on this machine.
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.HotkeyManager.availability",
+        staticmethod(lambda text: (True, "")),
+    )
+    secrets = MemorySecrets()
+    secrets.set("asr:aliyun_realtime:api_key", "stored-asr-key")
+    config = ConfigStore(tmp_path / "config.json")
+    window = SettingsWindow(config, secrets)
+    qtbot.addWidget(window)
+    window.asr_key.setText("typed-asr-key")
+    window.llm_key.setText("typed-llm-key")
+    window.asr_model.setText("my-custom-model")
+
+    export_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(export_path), ""),
+    )
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QMessageBox.information", lambda *args, **kwargs: None
+    )
+    window._export_settings()
+
+    payload = json.loads(export_path.read_text(encoding="utf-8"))
+    assert payload["format"] == "voicecontext-settings"
+    assert payload["settings"]["asr"]["model"] == "my-custom-model"
+    # The typed key belongs to the currently selected provider (openai_compatible),
+    # while keys already stored for other providers ride along untouched.
+    assert payload["secrets"]["asr:openai_compatible:api_key"] == "typed-asr-key"
+    assert payload["secrets"]["asr:aliyun_realtime:api_key"] == "stored-asr-key"
+    assert payload["secrets"]["llm:openai_compatible:api_key"] == "typed-llm-key"
+
+    # Import into a fresh window pointed at a fresh config store.
+    fresh_config = ConfigStore(tmp_path / "fresh.json")
+    fresh_secrets = MemorySecrets()
+    target = SettingsWindow(fresh_config, fresh_secrets)
+    qtbot.addWidget(target)
+    assert target.asr_model.text() != "my-custom-model"
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(export_path), ""),
+    )
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    target._import_settings()
+    assert target.asr_model.text() == "my-custom-model"
+    assert target.asr_key.text() == "typed-asr-key"
+    assert target.llm_key.text() == "typed-llm-key"
+
+    saved = []
+    target.saved.connect(lambda: saved.append(True))
+    target._save()
+    assert saved == [True]
+    assert fresh_config.get("asr.model") == "my-custom-model"
+    assert fresh_secrets.get("asr:openai_compatible:api_key") == "typed-asr-key"
+    assert fresh_secrets.get("asr:aliyun_realtime:api_key") == "stored-asr-key"
+    assert fresh_secrets.get("llm:openai_compatible:api_key") == "typed-llm-key"
+
+
+def test_settings_import_rejects_foreign_files(qtbot, tmp_path, monkeypatch) -> None:
+    set_language("en")
+    config = ConfigStore(tmp_path / "config.json")
+    window = SettingsWindow(config, MemorySecrets())
+    qtbot.addWidget(window)
+    bad = tmp_path / "foreign.json"
+    bad.write_text('{"hello": "world"}', encoding="utf-8")
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (str(bad), ""),
+    )
+    failures = []
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.QMessageBox.critical",
+        lambda parent, title, text: failures.append(text),
+    )
+    window._import_settings()
+    assert len(failures) == 1
+    assert "not a VoiceContext settings export" in failures[0]
 
 
 def test_settings_switches_between_remote_asr_defaults(qtbot, tmp_path) -> None:

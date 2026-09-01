@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from voice_context.core.templates import validate_template
 from voice_context.input.hotkeys import HotkeyManager
 from voice_context.storage.config_store import ConfigStore, DEFAULT_CONFIG
+from voice_context.storage.profile import PROFILE_KEYS, ProfileError, read_settings_bundle, write_settings_bundle
 from voice_context.storage.secrets import SecretStore
 from .hotkey_capture import HotkeyCaptureEdit
 from .i18n import translate_widget_tree
@@ -53,6 +54,7 @@ class SettingsWindow(QDialog):
         self.bindings: list[tuple[str, QWidget, Callable[[QWidget], Any]]] = []
         self.hotkey_status: dict[str, QLabel] = {}
         self.hotkey_edits: dict[str, HotkeyCaptureEdit] = {}
+        self._imported_secrets: dict[str, str] = {}
         self._current_page = -1
         self.setWindowTitle("VoiceContext Settings")
         self.resize(940, 720)
@@ -91,6 +93,12 @@ class SettingsWindow(QDialog):
         reset = QPushButton("Restore defaults")
         reset.clicked.connect(self._restore_defaults)
         footer.addWidget(reset)
+        export = QPushButton("Export settings...")
+        export.clicked.connect(self._export_settings)
+        footer.addWidget(export)
+        importer = QPushButton("Import settings...")
+        importer.clicked.connect(self._import_settings)
+        footer.addWidget(importer)
         footer.addStretch()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -468,6 +476,9 @@ class SettingsWindow(QDialog):
         try:
             self.secrets.set(SecretStore.key_for("asr", asr_provider), self.asr_key.text().strip())
             self.secrets.set(SecretStore.key_for("llm", llm_provider), self.llm_key.text().strip())
+            for name, value in self._imported_secrets.items():
+                if value:
+                    self.secrets.set(name, value)
         except RuntimeError as exc:
             QMessageBox.critical(self, "Credential storage failed", str(exc))
             return
@@ -476,7 +487,90 @@ class SettingsWindow(QDialog):
 
     def _load_provider_secret(self, section: str, combo: QComboBox, line_edit: QLineEdit) -> None:
         provider = str(combo.currentData())
-        line_edit.setText(self.secrets.get(SecretStore.key_for(section, provider)))
+        name = SecretStore.key_for(section, provider)
+        line_edit.setText(self._imported_secrets.get(name) or self.secrets.get(name))
+
+    def _export_settings(self) -> None:
+        valid, message = self._collect()
+        if not valid:
+            QMessageBox.warning(self, "Invalid settings", message)
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export settings",
+            str(Path.home() / "voicecontext-settings.json"),
+            "VoiceContext settings (*.json)",
+        )
+        if not path:
+            return
+        # Merge the keys typed in this dialog with any other provider keys already in
+        # the credential store, so switching providers does not lose them.
+        secrets = {name: value for name in PROFILE_KEYS if (value := self.secrets.get(name))}
+        secrets[SecretStore.key_for("asr", str(self.values["asr"]["provider"]))] = (
+            self.asr_key.text().strip()
+        )
+        secrets[SecretStore.key_for("llm", str(self.values["llm"]["provider"]))] = (
+            self.llm_key.text().strip()
+        )
+        try:
+            write_settings_bundle(Path(path), copy.deepcopy(self.values), secrets)
+        except (OSError, ProfileError) as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Settings exported",
+            "Settings and API keys were saved. The file contains secrets in plain text; store it safely.",
+        )
+
+    def _import_settings(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import settings",
+            str(Path.home()),
+            "VoiceContext settings (*.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            settings, secrets = read_settings_bundle(Path(path))
+        except ProfileError as exc:
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Import settings",
+            "Replace every setting in this window with the imported file? "
+            "Nothing is saved until you press Save.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.values = copy.deepcopy(settings)
+        self._rebuild_pages()
+        self._imported_secrets = secrets
+        asr_key = secrets.get(SecretStore.key_for("asr", str(self.values["asr"]["provider"])), "")
+        llm_key = secrets.get(SecretStore.key_for("llm", str(self.values["llm"]["provider"])), "")
+        self.asr_key.setText(asr_key)
+        self.llm_key.setText(llm_key)
+        QMessageBox.information(
+            self,
+            "Settings imported",
+            "Review the pages, then press Save to apply (API keys are restored on save).",
+        )
+
+    def _rebuild_pages(self) -> None:
+        self.bindings.clear()
+        self.hotkey_edits.clear()
+        self.hotkey_status.clear()
+        for index in range(self.pages.count()):
+            self.pages.removeWidget(self.pages.widget(0))
+        self.nav.clear()
+        self._current_page = -1
+        for name, builder in self._builders.items():
+            self.nav.addItem(QListWidgetItem(name))
+            self.pages.addWidget(self._scroll_page(name, builder()))
+        self.nav.setCurrentRow(0)
+        translate_widget_tree(self)
 
     def _restore_defaults(self) -> None:
         answer = QMessageBox.question(self, "Restore defaults", "Reset all settings except stored API keys?")

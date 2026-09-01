@@ -14,10 +14,42 @@ from .secrets import SecretStore
 
 PROFILE_FILES = ("config.json", "history.sqlite3")
 PROFILE_KEYS = ("asr:aliyun_realtime:api_key", "llm:openai_compatible:api_key", "asr:openai_compatible:api_key")
+SETTINGS_FORMAT = "voicecontext-settings"
 
 
 class ProfileError(RuntimeError):
     pass
+
+
+def read_settings_bundle(path: Path) -> tuple[dict, dict[str, str]]:
+    """Load a settings JSON exported from the Settings window."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ProfileError(f"Could not read the settings file: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("format") != SETTINGS_FORMAT:
+        raise ProfileError("This file is not a VoiceContext settings export.")
+    settings = payload.get("settings")
+    secrets = payload.get("secrets", {})
+    if not isinstance(settings, dict) or not isinstance(secrets, dict):
+        raise ProfileError("The settings file is malformed.")
+    return settings, {str(k): str(v) for k, v in secrets.items() if isinstance(v, str)}
+
+
+def write_settings_bundle(path: Path, settings: dict, secrets: dict[str, str]) -> Path:
+    """Write a single-file settings export containing every setting and API key."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format": SETTINGS_FORMAT,
+        "version": 1,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "settings": settings,
+        "secrets": {k: v for k, v in secrets.items() if v},
+    }
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+    return path
 
 
 def export_profile(archive_path: Path) -> Path:
