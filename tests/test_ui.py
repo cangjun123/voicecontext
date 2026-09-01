@@ -132,6 +132,28 @@ def test_overlay_transcript_auto_scrolls_to_the_latest_words(qtbot) -> None:
     qtbot.waitUntil(lambda: bar.value() == bar.maximum(), timeout=5000)
 
 
+def test_overlay_transcript_viewport_keeps_the_dark_overlay_background(qtbot) -> None:
+    """The scroll viewport must not put a light system canvas behind white text."""
+    set_language("en")
+    overlay = OverlayWindow({"overlay_opacity": 1.0})
+    qtbot.addWidget(overlay)
+    overlay.show_without_focus()
+
+    session = VoiceSession()
+    session.set_partial("Live recognized words")
+    overlay.set_session_timeline(session)
+    overlay.set_state("Listening")
+    qtbot.waitUntil(overlay.isVisible, timeout=5000)
+
+    viewport = overlay.transcript_scroll.viewport()
+    viewport_origin = viewport.mapTo(overlay, QPoint(0, 0))
+    sample = overlay.grab().toImage().pixelColor(
+        viewport_origin.x() + viewport.width() // 2,
+        viewport_origin.y() + viewport.height() - 8,
+    )
+    assert max(sample.red(), sample.green(), sample.blue()) < 100
+
+
 def test_overlay_survives_bursts_of_queued_transcript_updates(qtbot) -> None:
     """Rapid streaming updates must not recurse through nested event loops."""
     set_language("en")

@@ -84,6 +84,16 @@ class OverlayWindow(QWidget):
         self.transcript_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.transcript_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.transcript_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # QAbstractScrollArea paints through a separate viewport. Making only the
+        # outer QScrollArea transparent leaves that viewport on the system's light
+        # base color, which renders the overlay's near-white transcript invisible.
+        self.transcript_scroll.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.transcript_scroll.viewport().setAttribute(
+            Qt.WidgetAttribute.WA_TranslucentBackground
+        )
+        self.transcript_scroll.viewport().setAutoFillBackground(False)
+        self.transcript_scroll.viewport().setStyleSheet("background: transparent;")
+        self.transcript.setStyleSheet("background: transparent;")
         self.transcript_scroll.setStyleSheet("QScrollArea { background: transparent; }")
         layout.addWidget(self.transcript_scroll)
         self.references = QLabel("")
