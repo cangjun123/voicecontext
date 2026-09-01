@@ -102,6 +102,33 @@ def test_main_window_shows_full_completion_receipt(qtbot) -> None:
     )
 
 
+def test_overlay_transcript_auto_scrolls_to_the_latest_words(qtbot) -> None:
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    overlay.resize(460, 250)
+    qtbot.addWidget(overlay)
+    overlay.show_without_focus()
+
+    session = VoiceSession()
+    session.set_partial("short start")
+    overlay.set_session_timeline(session)
+
+    long_tail = " " + "and the user keeps talking well past two lines" * 30
+    session.set_partial(f"short start{long_tail}")
+    overlay.set_session_timeline(session)
+
+    bar = overlay.transcript_scroll.verticalScrollBar()
+    assert bar.maximum() > 0
+    assert bar.value() == bar.maximum()
+
+    overlay.show_completion("Use A", 1, "copied")
+    assert bar.value() == 0
+    assert overlay.transcript.text() == "Use A"
+
+    overlay.set_transcript("latest words again")
+    assert bar.value() == bar.maximum()
+
+
 def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:
     set_language("en")
     overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})

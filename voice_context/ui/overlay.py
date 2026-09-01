@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -72,9 +73,19 @@ class OverlayWindow(QWidget):
         layout.addLayout(header)
         self.transcript = QLabel("")
         self.transcript.setWordWrap(True)
-        self.transcript.setMaximumHeight(82)
         self.transcript.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        layout.addWidget(self.transcript)
+        self.transcript.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # Scrollable transcript: long speech keeps the overlay compact while the
+        # view auto-follows the newest words instead of clipping them.
+        self.transcript_scroll = QScrollArea()
+        self.transcript_scroll.setWidget(self.transcript)
+        self.transcript_scroll.setWidgetResizable(True)
+        self.transcript_scroll.setFixedHeight(82)
+        self.transcript_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.transcript_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.transcript_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.transcript_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        layout.addWidget(self.transcript_scroll)
         self.references = QLabel("")
         self.references.setWordWrap(True)
         self.references.setStyleSheet("color: #aeb5bd; font-size: 11px;")
@@ -118,11 +129,21 @@ class OverlayWindow(QWidget):
             self._hide_timer.start(int(self.config.get("overlay_duration_ms", 2600)))
 
     def set_transcript(self, text: str) -> None:
-        value = text.strip()
-        if len(value) > 240:
-            value = "..." + value[-237:]
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
-        self.transcript.setText(value or "Listening for speech...")
+        self.transcript.setText(text.strip() or tr("Listening for speech..."))
+        self._scroll_transcript_to_latest()
+
+    def _scroll_transcript_to_latest(self) -> None:
+        """Keep the newest words visible as the transcript grows."""
+        self.transcript_scroll.updateGeometry()
+        QApplication.processEvents()
+        bar = self.transcript_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _scroll_transcript_to_top(self) -> None:
+        """Show the start of the completed prompt, with manual scroll to read on."""
+        bar = self.transcript_scroll.verticalScrollBar()
+        bar.setValue(0)
 
     def set_session_timeline(self, session: VoiceSession, highlighted_id: str = "") -> None:
         self.transcript.setTextFormat(Qt.TextFormat.RichText)
@@ -135,6 +156,7 @@ class OverlayWindow(QWidget):
             or tr("Listening for speech...")
         )
         self.set_references(session.references)
+        self._scroll_transcript_to_latest()
 
     def set_references(self, references: list) -> None:
         if not references:
@@ -181,11 +203,9 @@ class OverlayWindow(QWidget):
             title = "Completed · Copied, original will be restored"
         self.status.setText(tr(title))
         self._apply_style("Error" if clipboard_state == "failed" else "PromptReady")
-        value = prompt.strip()
-        if len(value) > 240:
-            value = value[:237] + "..."
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
-        self.transcript.setText(value)
+        self.transcript.setText(prompt.strip())
+        self._scroll_transcript_to_top()
         footer = tr("{count} references · Click to edit").format(count=reference_count)
         self.references.setText(footer)
         self.level.hide()

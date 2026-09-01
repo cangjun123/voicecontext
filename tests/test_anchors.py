@@ -44,3 +44,19 @@ def test_empty_and_identical_snapshots_produce_monotonic_anchors() -> None:
     positions = reference_anchor_positions(session.transcript, session.references)
 
     assert [position for position, _ in positions] == [0, 2, 2]
+
+
+def test_long_transcripts_are_rendered_in_full_without_truncation() -> None:
+    session = VoiceSession()
+    session.set_partial("开头一段话。")
+    session.add_reference("A", captured_at_ms=1000)
+    tail = "然后" + "继续说了很长的一段话，" * 40 + "最后一句。"
+    session.set_partial(f"开头一段话。{tail}")
+
+    rendered = render_anchored_transcript(session.transcript, session.references)
+
+    assert rendered.startswith("开头一段话。")
+    assert "最后一句。" in rendered
+    assert "..." not in rendered
+    assert "[1]" in rendered
+    assert rendered.index("[1]") < rendered.index("最后一句。")

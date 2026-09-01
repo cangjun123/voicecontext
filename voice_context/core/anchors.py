@@ -38,26 +38,20 @@ def render_anchored_transcript(
     transcript: str,
     references: list[ReferenceEvent],
     *,
-    max_chars: int = 240,
     highlighted_id: str = "",
 ) -> str:
+    """Render the full transcript with reference anchors; scrolling shows the tail."""
     placements = reference_anchor_positions(transcript, references)
-    start = max(0, len(transcript) - max_chars)
-    visible = transcript[start:]
-    markers: dict[int, list[tuple[int, ReferenceEvent]]] = {}
-    for number, (position, reference) in enumerate(placements, start=1):
-        if position < start:
-            continue
-        markers.setdefault(position - start, []).append((number, reference))
 
-    parts = ["..." if start else ""]
-    for index in range(len(visible) + 1):
-        for number, reference in markers.get(index, []):
-            background = "#3fa67f" if reference.id == highlighted_id else "#27775f"
-            parts.append(
-                f'<span style="background:{background}; color:#ffffff; font-weight:600;">'
-                f"&nbsp;[{number}]&nbsp;</span>"
-            )
-        if index < len(visible):
-            parts.append(escape(visible[index]))
-    return "".join(parts)
+    rendered: list[str] = []
+    cursor = 0
+    for number, (position, reference) in enumerate(placements, start=1):
+        rendered.append(escape(transcript[cursor:position]))
+        background = "#3fa67f" if reference.id == highlighted_id else "#27775f"
+        rendered.append(
+            f'<span style="background:{background}; color:#ffffff; font-weight:600;">'
+            f"&nbsp;[{number}]&nbsp;</span>"
+        )
+        cursor = position
+    rendered.append(escape(transcript[cursor:]))
+    return "".join(rendered)
