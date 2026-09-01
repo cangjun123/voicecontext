@@ -120,15 +120,45 @@ def test_overlay_transcript_auto_scrolls_to_the_latest_words(qtbot) -> None:
     overlay.set_session_timeline(session)
 
     bar = overlay.transcript_scroll.verticalScrollBar()
-    assert bar.maximum() > 0
-    assert bar.value() == bar.maximum()
+    # The scroll is deferred one event-loop turn after the relayout.
+    qtbot.waitUntil(lambda: bar.maximum() > 0, timeout=5000)
+    qtbot.waitUntil(lambda: bar.value() == bar.maximum(), timeout=5000)
 
     overlay.show_completion("Use A", 1, "copied")
     assert bar.value() == 0
     assert overlay.transcript.text() == "Use A"
 
     overlay.set_transcript("latest words again")
-    assert bar.value() == bar.maximum()
+    qtbot.waitUntil(lambda: bar.value() == bar.maximum(), timeout=5000)
+
+
+def test_overlay_survives_bursts_of_queued_transcript_updates(qtbot) -> None:
+    """Rapid streaming updates must not recurse through nested event loops."""
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    qtbot.addWidget(overlay)
+    overlay.set_state("Listening")
+
+    from PySide6.QtCore import QObject, Signal
+
+    class Engine(QObject):
+        transcript_updated = Signal(str)
+
+    engine = Engine()
+    session = VoiceSession()
+
+    def on_update(text: str) -> None:
+        session.set_partial(text)
+        overlay.set_session_timeline(session)
+
+    engine.transcript_updated.connect(on_update)
+    for index in range(200):  # delivered as queued events by qtbot's event loop
+        engine.transcript_updated.emit(f"queued streaming update {index} " * 5)
+
+    qtbot.waitUntil(lambda: len(overlay.transcript.text()) > 0, timeout=5000)
+    bar = overlay.transcript_scroll.verticalScrollBar()
+    if bar.maximum() > 0:
+        assert bar.value() == bar.maximum()
 
 
 def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:

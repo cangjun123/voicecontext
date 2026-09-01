@@ -135,8 +135,13 @@ class OverlayWindow(QWidget):
 
     def _scroll_transcript_to_latest(self) -> None:
         """Keep the newest words visible as the transcript grows."""
-        self.transcript_scroll.updateGeometry()
-        QApplication.processEvents()
+        # A queued singleShot defers the scroll one event-loop turn, so the label
+        # relayout finishes first. Calling processEvents() here instead would run a
+        # nested loop that dispatches the NEXT queued transcript update, re-entering
+        # this method until the stack overflows.
+        QTimer.singleShot(0, self._apply_latest_scroll)
+
+    def _apply_latest_scroll(self) -> None:
         bar = self.transcript_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
