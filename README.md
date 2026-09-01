@@ -131,3 +131,24 @@ PyInstaller 配置会明确排除 FunASR、faster-whisper、Torch、ONNX Runtime
 ```
 
 生成文件位于 `dist\VoiceContext.exe`。单文件版启动时会将 Qt 和运行时依赖解压到系统临时目录，因此首次启动通常比目录版稍慢。
+
+## 迁移到其他电脑
+
+把当前电脑的全部配置（设置、历史记录、API 密钥）打包成一个 zip：
+
+```powershell
+E:\workSpace\software\VoiceContext.exe --export-profile D:\VoiceContext-迁移包.zip
+```
+
+把 zip 和 `VoiceContext.exe` 一起拷到新电脑，然后导入：
+
+```powershell
+VoiceContext.exe --import-profile D:\VoiceContext-迁移包.zip
+```
+
+导入完成后即可使用，注意三点：
+
+- **导入前请先退出正在运行的 VoiceContext**（托盘图标右键 → 退出），否则正在使用的文件无法替换。
+- 导入时新电脑上已有的配置和历史会自动备份到 `%APPDATA%\VoiceContext\backup-时间戳\`，不会丢失。
+- 迁移包里包含**明文 API 密钥**（导出到 zip 里的 `credentials.json`），请妥善保管，用完即删。
+- 录音设备名称不会迁移（新电脑设备名通常不同），程序会在导入后自动切回默认麦克风；如有需要在“设置 > ASR”里重新选择。

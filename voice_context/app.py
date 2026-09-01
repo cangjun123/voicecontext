@@ -1630,9 +1630,66 @@ def run_asr_self_test(arguments: list[str]) -> int:
     return exit_code
 
 
+def run_profile_command(arguments: list[str]) -> int:
+    """Handle --export-profile/--import-profile without launching the GUI."""
+    usage = (
+        "Usage:\n"
+        "  VoiceContext --export-profile <path.zip>\n"
+        "  VoiceContext --import-profile <path.zip-or-folder>"
+    )
+
+    def value_for(flag: str) -> str | None:
+        try:
+            return arguments[arguments.index(flag) + 1]
+        except (ValueError, IndexError):
+            return None
+
+    from voice_context.storage.profile import (
+        ProfileError,
+        export_profile,
+        import_profile,
+    )
+
+    if "--export-profile" in arguments:
+        target = value_for("--export-profile")
+        if not target:
+            print(usage)
+            return 2
+        try:
+            path = export_profile(Path(target).expanduser().resolve())
+        except ProfileError as exc:
+            print(f"Export failed: {exc}")
+            return 1
+        print(f"Profile exported to {path}")
+        print("The archive contains settings, history, and API keys; store it safely.")
+        return 0
+
+    if "--import-profile" in arguments:
+        source = value_for("--import-profile")
+        if not source:
+            print(usage)
+            return 2
+        try:
+            summary = import_profile(Path(source).expanduser().resolve())
+        except ProfileError as exc:
+            print(f"Import failed: {exc}")
+            return 1
+        print(
+            f"Profile imported: {summary['files_restored']} files and "
+            f"{summary['keys_restored']} API keys restored."
+        )
+        print("Previous files were backed up inside %APPDATA%\\VoiceContext.")
+        return 0
+
+    print(usage)
+    return 2
+
+
 def main() -> int:
     if "--asr-self-test" in sys.argv:
         return run_asr_self_test(sys.argv[1:])
+    if "--export-profile" in sys.argv or "--import-profile" in sys.argv:
+        return run_profile_command(sys.argv[1:])
     if os.name == "nt":
         try:
             from ctypes import windll
