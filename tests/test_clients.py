@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import ssl
 import httpx
 import pytest
 
 from voice_context.asr.api_engine import APIASREngine
 from voice_context.asr.base import ASRError
 from voice_context.asr.factory import create_asr_engine
+from voice_context.core import tls
 from voice_context.core.events import ReferenceEvent
 from voice_context.llm.client import LLMComposerClient
 
@@ -160,3 +162,41 @@ def test_openai_root_urls_gain_v1_prefix(monkeypatch, tmp_path) -> None:
         "https://host/v1/audio/transcriptions",
         "https://host/v1/chat/completions",
     ]
+
+
+def test_httpx_calls_reuse_the_shared_tls_context(monkeypatch, tmp_path) -> None:
+    observed = []
+
+    def post(url, **kwargs):
+        observed.append(("post", kwargs.get("verify")))
+        return FakeResponse({"text": "ok"})
+
+    def stream(method, url, **kwargs):
+        observed.append(("stream", kwargs.get("verify")))
+        return FakeStreamResponse([{"choices": [{"delta": {"content": "ok"}}]}, "[DONE]"])
+
+    monkeypatch.setattr("voice_context.asr.api_engine.httpx.post", post)
+    monkeypatch.setattr("voice_context.llm.client.httpx.stream", stream)
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"RIFF" + b"0" * 100)
+    APIASREngine({"base_url": "https://host/v1"}).transcribe(audio)
+    LLMComposerClient({"provider": "openai_compatible", "base_url": "https://host/v1"}).rewrite("a", "b", [])
+    assert observed == [
+        ("post", tls.SSL_CONTEXT),
+        ("stream", tls.SSL_CONTEXT),
+    ]
+
+
+def test_tls_context_falls_back_to_system_trust_when_bundle_missing(monkeypatch) -> None:
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "certifi":
+            raise FileNotFoundError("cacert.pem was deleted from the temp dir")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    context = tls._build_ssl_context()
+    assert isinstance(context, ssl.SSLContext)

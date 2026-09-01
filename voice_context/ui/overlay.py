@@ -198,7 +198,7 @@ class OverlayWindow(QWidget):
         self.status.setText(tr("Generation failed"))
         self._apply_style("Error")
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
-        self.transcript.setText(detail)
+        self.transcript.setText(tr(detail))
         self.references.setText(
             tr("Transcript and {count} references were preserved").format(count=reference_count)
         )

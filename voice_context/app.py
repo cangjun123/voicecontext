@@ -934,6 +934,21 @@ class VoiceContextController(QObject):
         llm_configured = bool(llm_config.get("enabled")) and llm_config.get(
             "provider"
         ) not in {"rules", "disabled"}
+        if not session.references and not session.transcript.strip():
+            # Nothing was spoken or copied: rewriting cannot add anything, so fail
+            # with a clear reason instead of sending an empty request to the LLM.
+            metadata: dict[str, Any] = {
+                "requested": False,
+                "used": False,
+                "provider": str(llm_config.get("provider", "openai_compatible")),
+                "model": str(llm_config.get("model", "")),
+                "mode": "empty_session",
+                "skip_reason": "no_speech_and_no_references",
+            }
+            LOG.info("Skipping composition because nothing was recognized or captured")
+            result = PromptComposeResult("", "", metadata, "No speech was recognized.")
+            QTimer.singleShot(0, lambda: self._compose_done(result))
+            return
         use_llm = llm_configured and not direct_transcript
         options = ComposeOptions(
             target=target,

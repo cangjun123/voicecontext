@@ -41,6 +41,7 @@ ZH_CN = {
     "Completed · Copied, original will be restored": "已完成 · 已复制，稍后恢复原剪贴板",
     "{count} references · Click to edit": "{count} 个引用 · 点击编辑",
     "Generation failed": "生成失败",
+    "No speech was recognized.": "未识别到语音内容。",
     "Transcript and {count} references were preserved": "转写和 {count} 个引用已保留",
     "{count} references": "{count} 个引用",
     "succeeded": "成功",

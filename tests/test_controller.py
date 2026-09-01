@@ -307,6 +307,52 @@ def test_controller_uses_plain_asr_transcript_without_references_or_llm(
     controller.shutdown()
 
 
+def test_controller_fails_clearly_when_nothing_was_recognized(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("general.language", "en")
+    config.set("asr.provider", "aliyun_realtime")
+    config.set("asr.model", "fun-asr-realtime")
+    config.set("llm.enabled", True)
+    config.set("output.auto_paste", False)
+
+    class SilentRealtimeASR(FakeRealtimeASR):
+        def stop(self):
+            self.running = False
+            return RealtimeRecognitionResult(text="", segments=[])
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AliyunRealtimeASR", SilentRealtimeASR)
+    monkeypatch.setattr(
+        application,
+        "LLMComposerClient",
+        lambda *_args, **_kwargs: pytest.fail("LLM must not be created for an empty session"),
+    )
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
+    controller.finish_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Error", timeout=5000)
+
+    assert controller._session.final_prompt == ""
+    assert controller._session.error == "No speech was recognized."
+    assert controller._session.composer_metadata["mode"] == "empty_session"
+    assert controller._session.composer_metadata["skip_reason"] == "no_speech_and_no_references"
+    assert controller._session.composer_metadata["requested"] is False
+    assert controller._session.output_metadata["status"] == "skipped"
+    assert controller.overlay.status.text() == "Generation failed"
+    stored = controller.history.get(controller._session.id)
+    assert stored and stored["error"] == "No speech was recognized."
+    controller.shutdown()
+
+
 def test_controller_uses_true_realtime_asr_without_file_upload_transcription(
     qtbot, qapp, monkeypatch, tmp_path
 ) -> None:

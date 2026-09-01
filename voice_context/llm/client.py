@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from voice_context.core.events import ReferenceEvent
+from voice_context.core.tls import SSL_CONTEXT
 
 
 class LLMError(RuntimeError):
@@ -102,6 +103,7 @@ class LLMComposerClient:
                 headers=self._headers(),
                 json=body,
                 timeout=float(self.config.get("timeout_s", 60)),
+                verify=SSL_CONTEXT,
             ) as response:
                 if response.status_code >= 400:
                     detail = response.read().decode("utf-8", "replace")[:400]
@@ -188,6 +190,7 @@ class LLMComposerClient:
                 headers=self._headers(),
                 json=body,
                 timeout=float(self.config.get("timeout_s", 60)),
+                verify=SSL_CONTEXT,
             )
             response.raise_for_status()
             payload = response.json()

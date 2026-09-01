@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from voice_context.core.tls import SSL_CONTEXT
+
 from .base import ASREngine, ASRError, TranscriptionResult
 
 
@@ -49,6 +51,7 @@ class APIASREngine(ASREngine):
                     data=data,
                     files={"file": (audio_path.name, stream, "audio/wav")},
                     timeout=timeout,
+                    verify=SSL_CONTEXT,
                 )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
