@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from voice_context.core.templates import validate_template
+from voice_context.input.audio_capture import AudioCapture
 from voice_context.input.hotkeys import HotkeyManager
 from voice_context.storage.config_store import ConfigStore, DEFAULT_CONFIG
 from voice_context.storage.profile import PROFILE_KEYS, ProfileError, read_settings_bundle, write_settings_bundle
@@ -283,7 +284,11 @@ class SettingsWindow(QDialog):
         form.addRow("API key", self.asr_key)
         form.addRow("Language", self._line("asr.language", placeholder="zh, en, or blank for auto"))
         form.addRow("Sample rate", self._spin("asr.sample_rate", 8000, 96000, " Hz"))
-        form.addRow("Input device", self._line("asr.input_device", placeholder="Blank uses the Windows default"))
+        self.asr_input_device = QComboBox()
+        self.asr_input_device.setEditable(False)
+        self._refresh_audio_devices()
+        self._bind("asr.input_device", self.asr_input_device, lambda item: item.currentData() or "")
+        form.addRow("Input device", self.asr_input_device)
         form.addRow("Voice activity detection", self._check("asr.vad"))
         form.addRow("Silence threshold", self._double("asr.silence_threshold", 0.001, 0.2, 0.001, 3))
         form.addRow("Silence duration", self._spin("asr.silence_ms", 100, 5000, " ms"))
@@ -302,6 +307,24 @@ class SettingsWindow(QDialog):
         test.clicked.connect(self._test_asr)
         form.addRow("", test)
         return page
+
+    def _refresh_audio_devices(self) -> None:
+        current = str(self._value("asr.input_device") or "")
+        self.asr_input_device.clear()
+        self.asr_input_device.addItem(tr("Default (Windows)"), "")
+        devices = AudioCapture.devices()
+        for device in devices:
+            name = device.get("name", "")
+            if name:
+                self.asr_input_device.addItem(name, name)
+        if current:
+            index = self.asr_input_device.findData(current)
+            if index >= 0:
+                self.asr_input_device.setCurrentIndex(index)
+            else:
+                # Device not found, add it as a custom entry to preserve config
+                self.asr_input_device.addItem(f"{current} (not found)", current)
+                self.asr_input_device.setCurrentIndex(self.asr_input_device.count() - 1)
 
     def _asr_provider_changed(self) -> None:
         self._load_provider_secret("asr", self.asr_provider, self.asr_key)
