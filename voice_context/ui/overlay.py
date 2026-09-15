@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -48,9 +48,10 @@ class OverlayWindow(QWidget):
         self._press_position: QPoint | None = None
         self._dragging = False
         self._pinned_position = False
+        self._hovering = False
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
-        self._hide_timer.timeout.connect(self.hide)
+        self._hide_timer.timeout.connect(self._on_hide_timer_timeout)
         self.setFixedWidth(460)
         self.setMaximumHeight(250)
 
@@ -80,7 +81,8 @@ class OverlayWindow(QWidget):
         self.transcript_scroll = QScrollArea()
         self.transcript_scroll.setWidget(self.transcript)
         self.transcript_scroll.setWidgetResizable(True)
-        self.transcript_scroll.setFixedHeight(82)
+        self.transcript_scroll.setMinimumHeight(40)
+        self.transcript_scroll.setMaximumHeight(140)
         self.transcript_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.transcript_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.transcript_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -113,16 +115,36 @@ class OverlayWindow(QWidget):
         translate_widget_tree(self)
         for child in self.findChildren(QWidget):
             child.installEventFilter(self)
+        self.setMouseTracking(True)
+        self.frame.setMouseTracking(True)
 
     def _apply_style(self, state: str) -> None:
         color = self.COLORS.get(state, self.COLORS["Idle"])
         self.dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
+        cursor = "PointingHandCursor" if state == "PromptReady" else "ArrowCursor"
         self.frame.setStyleSheet(
             "QFrame#overlayFrame { background: rgba(30, 33, 37, 242); "
             "border: 1px solid rgba(255,255,255,35); border-radius: 7px; } "
             "QLabel { color: #f2f3f4; } QProgressBar { background: #45494e; border: none; } "
             f"QProgressBar::chunk {{ background: {color}; }}"
         )
+        self.frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if state == "PromptReady" else Qt.CursorShape.ArrowCursor))
+
+    def enterEvent(self, event) -> None:
+        self._hovering = True
+        if self._hide_timer.isActive():
+            self._hide_timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovering = False
+        if self._state in {"PromptReady", "Error", "Idle"}:
+            self._hide_timer.start(int(self.config.get("overlay_duration_ms", 2600)))
+        super().leaveEvent(event)
+
+    def _on_hide_timer_timeout(self) -> None:
+        if not self._hovering:
+            self.hide()
 
     def set_state(self, state: str, detail: str = "") -> None:
         self._state = state
@@ -135,7 +157,7 @@ class OverlayWindow(QWidget):
         self.level.setVisible(state == "Listening")
         self._hide_timer.stop()
         self.show_without_focus()
-        if state in {"PromptReady", "Error", "Idle"}:
+        if state in {"PromptReady", "Error", "Idle"} and not self._hovering:
             self._hide_timer.start(int(self.config.get("overlay_duration_ms", 2600)))
 
     def set_transcript(self, text: str) -> None:
@@ -221,7 +243,7 @@ class OverlayWindow(QWidget):
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
         self.transcript.setText(prompt.strip())
         self._scroll_transcript_to_top()
-        footer = tr("{count} references · Click to edit").format(count=reference_count)
+        footer = tr("{count} references · Double-click to edit").format(count=reference_count)
         self.references.setText(footer)
         self.level.hide()
         self._hide_timer.stop()
@@ -256,7 +278,7 @@ class OverlayWindow(QWidget):
         self.raise_()
 
     def reposition(self) -> None:
-        screen = QApplication.primaryScreen()
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         if not screen:
             return
         area = screen.availableGeometry()
@@ -284,6 +306,12 @@ class OverlayWindow(QWidget):
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._pointer_press(event)
+            return True
+        if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
+            if self._state == "PromptReady":
+                self._hide_timer.stop()
+                self.hide()
+                self.edit_requested.emit()
             return True
         if event.type() == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
             self._pointer_move(event)
@@ -320,12 +348,18 @@ class OverlayWindow(QWidget):
             self.move(position - self._drag_origin)
             self._pinned_position = True
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._state == "PromptReady":
+            self._hide_timer.stop()
+            self.hide()
+            self.edit_requested.emit()
+            event.accept()
+
     def _pointer_release(self) -> None:
         clicked = self._drag_origin is not None and not self._dragging
         self._drag_origin = None
         self._press_position = None
         self._dragging = False
         if clicked and self._state == "PromptReady":
+            # Single click now only pauses the hide timer; editing requires double-click.
             self._hide_timer.stop()
-            self.hide()
-            self.edit_requested.emit()
