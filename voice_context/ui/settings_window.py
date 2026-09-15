@@ -36,7 +36,7 @@ from voice_context.storage.config_store import ConfigStore, DEFAULT_CONFIG
 from voice_context.storage.profile import PROFILE_KEYS, ProfileError, read_settings_bundle, write_settings_bundle
 from voice_context.storage.secrets import SecretStore
 from .hotkey_capture import HotkeyCaptureEdit
-from .i18n import translate_widget_tree
+from .i18n import tr, translate_widget_tree
 
 
 class SettingsWindow(QDialog):
