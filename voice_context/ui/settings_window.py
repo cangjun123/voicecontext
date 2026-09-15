@@ -262,9 +262,18 @@ class SettingsWindow(QDialog):
     def _validate_hotkey(self, key: str, text: str) -> None:
         valid, message = HotkeyManager.availability(text)
         label = self.hotkey_status[key]
-        label.setText("Available" if valid else "Conflict")
-        label.setToolTip(message)
-        label.setStyleSheet("color: #258263;" if valid else "color: #c85a5a;")
+        if valid:
+            label.setText(tr("Available"))
+            label.setStyleSheet("color: #258263;")
+        else:
+            label.setText(tr("Conflict"))
+            label.setStyleSheet("color: #c85a5a;")
+            # Show detailed conflict message in tooltip and as status tip
+            label.setToolTip(message)
+            # Also check for internal duplicates
+            duplicates = HotkeyManager.duplicate_conflicts(self.values.get("hotkeys", {}))
+            if text and text in duplicates:
+                label.setToolTip(tr("Conflicts with another VoiceContext shortcut"))
 
     def _asr_page(self) -> QWidget:
         page, form = self._form_page()
