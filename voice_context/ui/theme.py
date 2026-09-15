@@ -10,7 +10,7 @@ QMainWindow, QDialog, QWidget#root { background: #f7f8fa; }
 QFrame#sidebar { background: #eef0f2; border-right: 1px solid #d9dde2; }
 QLabel#appTitle { font-size: 18px; font-weight: 650; color: #17191c; }
 QLabel#sectionTitle { font-size: 14px; font-weight: 650; color: #25282d; }
-QLabel#muted { color: #697078; }
+QLabel#muted { color: #5a626a; }
 QLabel#statusBadge { background: #e7ece9; color: #355b46; border-radius: 5px; padding: 4px 9px; font-weight: 600; }
 QPushButton { background: #ffffff; border: 1px solid #cfd4da; border-radius: 5px; padding: 7px 12px; min-height: 18px; }
 QPushButton:hover { background: #f2f4f6; border-color: #aeb5bd; }
@@ -46,7 +46,7 @@ QMainWindow, QDialog, QWidget#root { background: #202225; }
 QFrame#sidebar { background: #181a1d; border-right: 1px solid #34383d; }
 QLabel#appTitle { font-size: 18px; font-weight: 650; color: #ffffff; }
 QLabel#sectionTitle { font-size: 14px; font-weight: 650; color: #f0f1f2; }
-QLabel#muted { color: #a5abb2; }
+QLabel#muted { color: #b8bec5; }
 QLabel#statusBadge { background: #29483d; color: #bce6d2; border-radius: 5px; padding: 4px 9px; font-weight: 600; }
 QPushButton { background: #2d3035; border: 1px solid #484d54; border-radius: 5px; padding: 7px 12px; min-height: 18px; }
 QPushButton:hover { background: #383c42; border-color: #656c75; }
