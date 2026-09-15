@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -13,10 +13,9 @@ from voice_context.core.session import SessionState
 LOG = logging.getLogger("voice_context")
 
 
-def create_tray_icon(color: str = "#258263", inactive: bool = False) -> QIcon:
+def create_tray_icon(color: str = "#0d9488", inactive: bool = False) -> QIcon:
     # Support high-DPI displays by scaling the pixmap according to device pixel ratio
     ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
-    # Larger base size for better visibility
     base_size = 48
     size = int(base_size * ratio)
     pixmap = QPixmap(size, size)
@@ -24,27 +23,37 @@ def create_tray_icon(color: str = "#258263", inactive: bool = False) -> QIcon:
     pixmap.fill(QColor("transparent"))
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QColor("transparent"))
+    painter.setPen(Qt.PenStyle.NoPen)
     
-    # Use theme-consistent colors
+    # Theme-consistent colors
     if inactive:
-        # Softer gray for inactive state
-        bg_color = QColor("#9ca3af")
+        # Darker, more sophisticated gray for inactive state
+        bg_color = QColor("#4b5563")
     else:
         bg_color = QColor(color)
     
+    # Full-bleed rounded rect (no white border)
     painter.setBrush(bg_color)
-    # Larger, more modern rounded rect
-    painter.drawRoundedRect(6, 4, 36, 40, 8, 8)
+    painter.drawRoundedRect(0, 0, size, size, int(10 * ratio), int(10 * ratio))
     
-    # Microphone icon - larger and clearer
+    # Microphone icon - centered and proportional
     painter.setBrush(QColor("white"))
-    # Mic head
-    painter.drawRoundedRect(20, 12, 8, 16, 4, 4)
+    center_x = size / 2
+    # Mic head (rounded rect)
+    mic_width = int(10 * ratio)
+    mic_height = int(20 * ratio)
+    mic_top = int(10 * ratio)
+    painter.drawRoundedRect(int(center_x - mic_width/2), mic_top, mic_width, mic_height, int(5 * ratio), int(5 * ratio))
     # Mic stem
-    painter.drawRect(23, 28, 2, 8)
-    # Mic base
-    painter.drawRoundedRect(16, 34, 16, 3, 1.5, 1.5)
+    stem_width = int(3 * ratio)
+    stem_height = int(8 * ratio)
+    stem_top = mic_top + mic_height
+    painter.drawRect(int(center_x - stem_width/2), stem_top, stem_width, stem_height)
+    # Mic base (wider rounded rect)
+    base_width = int(20 * ratio)
+    base_height = int(4 * ratio)
+    base_top = stem_top + stem_height
+    painter.drawRoundedRect(int(center_x - base_width/2), base_top, base_width, base_height, int(2 * ratio), int(2 * ratio))
     
     painter.end()
     return QIcon(pixmap)
@@ -122,7 +131,7 @@ class TrayIcon(QSystemTrayIcon):
             color = "#2563eb"  # info blue
             inactive = False
         else:
-            color = "#9ca3af"  # neutral gray
+            color = "#4b5563"  # darker neutral gray
             inactive = True
             
         self.setIcon(create_tray_icon(color, inactive))
