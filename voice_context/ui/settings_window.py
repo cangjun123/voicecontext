@@ -66,9 +66,11 @@ class SettingsWindow(QDialog):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
         self.nav = QListWidget()
-        self.nav.setFixedWidth(180)
+        self.nav.setObjectName("settingsNav")
+        self.nav.setFixedWidth(200)
         self.nav.setFrameShape(QListWidget.Shape.NoFrame)
-        self.nav.setSpacing(2)
+        self.nav.setSpacing(0)
+        self.nav.setContentsMargins(8, 8, 8, 8)
         self.pages = QStackedWidget()
         self._builders = {
             "General": self._general_page,

@@ -196,6 +196,35 @@ QListWidget::item:selected, QTableWidget::item:selected {{
     color: {colors['accent']};
 }}
 
+/* Settings sidebar navigation */
+QListWidget#settingsNav {{
+    background: {colors['bg_secondary']};
+    border: none;
+    border-right: 1px solid {colors['border']};
+    border-radius: 0;
+    outline: none;
+}}
+
+QListWidget#settingsNav::item {{
+    padding: 12px 16px;
+    border: none;
+    border-radius: 8px;
+    margin: 2px 8px;
+    color: {colors['fg_secondary']};
+    font-weight: 500;
+}}
+
+QListWidget#settingsNav::item:hover {{
+    background: {colors['bg_tertiary']};
+    color: {colors['fg_primary']};
+}}
+
+QListWidget#settingsNav::item:selected {{
+    background: {colors['accent_light']};
+    color: {colors['accent']};
+    font-weight: 600;
+}}
+
 QHeaderView::section {{
     background: {colors['bg_secondary']};
     border: none;
