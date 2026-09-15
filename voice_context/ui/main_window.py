@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -185,8 +186,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 8, 0)
         left_layout.addLayout(self._section_header("Live transcript", "Final and partial speech recognition output"))
-        self.transcript_edit = QPlainTextEdit()
-        self.transcript_edit.setReadOnly(True)
+        self.transcript_edit = QTextBrowser()
         self.transcript_edit.setPlaceholderText("Speech appears here while listening.")
         left_layout.addWidget(self.transcript_edit, 2)
         refs_header = QHBoxLayout()
@@ -295,15 +295,25 @@ class MainWindow(QMainWindow):
 
     def set_session(self, session: VoiceSession) -> None:
         self._session = session
-        self.transcript_edit.setPlainText(session.transcript)
+        self._render_transcript(session)
         self.prompt_edit.setPlainText(session.final_prompt)
         self._rebuild_references(session)
         self.set_state(session.state)
 
-    def update_transcript(self, text: str) -> None:
-        self.transcript_edit.setPlainText(text)
+    def _render_transcript(self, session: VoiceSession) -> None:
+        from voice_context.core.anchors import render_anchored_transcript
+        html = render_anchored_transcript(session.transcript, session.references)
+        self.transcript_edit.setHtml(html)
         scrollbar = self.transcript_edit.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def update_transcript(self, text: str) -> None:
+        if self._session:
+            self._render_transcript(self._session)
+        else:
+            self.transcript_edit.setPlainText(text)
+            scrollbar = self.transcript_edit.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def update_prompt(self, text: str) -> None:
         self.prompt_edit.setPlainText(text)
