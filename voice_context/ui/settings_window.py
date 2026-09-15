@@ -311,11 +311,23 @@ class SettingsWindow(QDialog):
         form.addRow("Request timeout", self._spin("asr.timeout_s", 5, 600, " s"))
         self.asr_headers = QPlainTextEdit(json.dumps(self._value("asr.custom_headers"), indent=2))
         self.asr_headers.setMaximumHeight(90)
+        self.asr_headers.textChanged.connect(lambda: self._validate_json_field(self.asr_headers))
         form.addRow("Custom headers (JSON)", self.asr_headers)
         test = QPushButton("Test with a WAV file")
         test.clicked.connect(self._test_asr)
         form.addRow("", test)
         return page
+
+    def _validate_json_field(self, field: QPlainTextEdit) -> None:
+        try:
+            text = field.toPlainText().strip()
+            if not text:
+                field.setStyleSheet("")
+                return
+            json.loads(text)
+            field.setStyleSheet("border: 1px solid #258263;")
+        except json.JSONDecodeError:
+            field.setStyleSheet("border: 1px solid #c85a5a;")
 
     def _refresh_audio_devices(self) -> None:
         current = str(self._value("asr.input_device") or "")
@@ -377,6 +389,7 @@ class SettingsWindow(QDialog):
         form.addRow("Preserve Chinese output", self._check("llm.preserve_chinese"))
         self.llm_headers = QPlainTextEdit(json.dumps(self._value("llm.custom_headers"), indent=2))
         self.llm_headers.setMaximumHeight(90)
+        self.llm_headers.textChanged.connect(lambda: self._validate_json_field(self.llm_headers))
         form.addRow("Custom headers (JSON)", self.llm_headers)
         test = QPushButton("Test composer connection")
         test.clicked.connect(self._test_llm)
