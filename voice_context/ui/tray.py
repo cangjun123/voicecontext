@@ -14,25 +14,9 @@ LOG = logging.getLogger("voice_context")
 
 
 def create_tray_icon(color: str = "#0d9488", inactive: bool = False) -> QIcon:
-    # Create icon with multiple sizes for Windows tray
-    # Windows typically requests 16x16, 20x20, 24x24, 32x32
-    icon = QIcon()
-    
-    for base_size in [16, 20, 24, 32, 48]:
-        pixmap = _create_tray_pixmap(base_size, color, inactive)
-        icon.addPixmap(pixmap)
-    
-    return icon
-
-
-def _create_tray_pixmap(base_size: int, color: str, inactive: bool) -> QPixmap:
-    """Create a single tray icon pixmap at the specified logical size."""
-    # Use device pixel ratio for crisp rendering on high-DPI displays
-    ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
-    size = int(base_size * ratio)
-    
-    pixmap = QPixmap(size, size)
-    pixmap.setDevicePixelRatio(ratio)
+    # Create a simple 16x16 icon - the actual size Windows tray uses
+    # Do NOT use devicePixelRatio scaling, let Windows handle it
+    pixmap = QPixmap(16, 16)
     pixmap.fill(QColor("transparent"))
     
     painter = QPainter(pixmap)
@@ -44,63 +28,22 @@ def _create_tray_pixmap(base_size: int, color: str, inactive: bool) -> QPixmap:
     else:
         bg_color = QColor(color)
     
-    # Standard tray icon with padding (safe area)
-    # Leave ~12.5% margin on all sides for the "safe zone"
-    margin = int(base_size * 0.125 * ratio)
-    icon_size = size - (margin * 2)
-    
-    # Draw background circle (standard for tray icons)
+    # Simple filled circle - no padding, fill the entire 16x16 area
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(bg_color)
-    painter.drawEllipse(margin, margin, icon_size, icon_size)
+    painter.drawEllipse(0, 0, 16, 16)
     
-    # Draw microphone icon in the center
+    # Simple white microphone icon
     painter.setBrush(QColor("white"))
-    center_x = size / 2
-    center_y = size / 2
-    
-    # Mic proportions based on base_size
-    scale = ratio
-    mic_width = int(8 * scale)
-    mic_height = int(12 * scale)
-    mic_top = center_y - (mic_height / 2) - int(2 * scale)
-    
-    # Mic head (rounded rect)
-    painter.drawRoundedRect(
-        int(center_x - mic_width / 2),
-        int(mic_top),
-        mic_width,
-        mic_height,
-        int(4 * scale),
-        int(4 * scale)
-    )
-    
+    # Mic head (small rounded rect in center)
+    painter.drawRoundedRect(6, 3, 4, 6, 2, 2)
     # Mic stem
-    stem_width = int(2 * scale)
-    stem_height = int(4 * scale)
-    stem_top = mic_top + mic_height
-    painter.drawRect(
-        int(center_x - stem_width / 2),
-        int(stem_top),
-        stem_width,
-        stem_height
-    )
-    
-    # Mic base (horizontal line)
-    base_width = int(12 * scale)
-    base_height = int(2 * scale)
-    base_top = stem_top + stem_height
-    painter.drawRoundedRect(
-        int(center_x - base_width / 2),
-        int(base_top),
-        base_width,
-        base_height,
-        int(1 * scale),
-        int(1 * scale)
-    )
+    painter.drawRect(7, 9, 2, 3)
+    # Mic base
+    painter.drawRect(5, 12, 6, 1)
     
     painter.end()
-    return pixmap
+    return QIcon(pixmap)
 
 
 class TrayIcon(QSystemTrayIcon):
