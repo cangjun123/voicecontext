@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QStyle,
@@ -86,6 +87,15 @@ class ReferenceWidget(QFrame):
         delete.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         delete.setToolTip(tr("Delete reference"))
         delete.setFixedSize(30, 30)
-        delete.clicked.connect(lambda: self.delete_requested.emit(reference.id))
+        delete.clicked.connect(self._confirm_delete)
         layout.addWidget(edit)
         layout.addWidget(delete)
+
+    def _confirm_delete(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            tr("Delete reference"),
+            tr("Delete this reference? This action cannot be undone."),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.delete_requested.emit(self.reference.id)
