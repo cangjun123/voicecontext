@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from .i18n import tr
@@ -13,7 +13,11 @@ LOG = logging.getLogger("voice_context")
 
 
 def create_tray_icon(color: str = "#258263") -> QIcon:
-    pixmap = QPixmap(32, 32)
+    # Support high-DPI displays by scaling the pixmap according to device pixel ratio
+    ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
+    size = int(32 * ratio)
+    pixmap = QPixmap(size, size)
+    pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(QColor("transparent"))
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
