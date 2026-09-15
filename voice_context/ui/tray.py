@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPi
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from .i18n import tr
+from voice_context.core.session import SessionState
 
 
 LOG = logging.getLogger("voice_context")
@@ -81,16 +82,20 @@ class TrayIcon(QSystemTrayIcon):
             self.show_requested.emit()
 
     def set_state(self, state: str) -> None:
-        active = state in {"Listening", "Paused"}
-        busy = state in {"Armed", "Composing"}
+        try:
+            session_state = SessionState(state)
+        except ValueError:
+            session_state = SessionState.IDLE
+        active = session_state in {SessionState.LISTENING, SessionState.PAUSED}
+        busy = session_state in {SessionState.ARMED, SessionState.COMPOSING}
         self.start_action.setEnabled(not active and not busy)
         self.finish_action.setEnabled(active)
         self.pause_action.setEnabled(active)
-        self.pause_action.setText(tr("Resume" if state == "Paused" else "Pause"))
+        self.pause_action.setText(tr("Resume" if session_state == SessionState.PAUSED else "Pause"))
         self.setToolTip(f"VoiceContext - {state}")
         color = (
             "#d29433"
-            if state == "Paused"
+            if session_state == SessionState.PAUSED
             else "#258263"
             if active
             else "#3978b8"
