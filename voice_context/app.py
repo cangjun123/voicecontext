@@ -1709,12 +1709,13 @@ def main() -> int:
             windll.shell32.SetCurrentProcessExplicitAppUserModelID("VoiceContext.Desktop")
         except (AttributeError, OSError):
             pass
+    # High-DPI must be set before QApplication instantiation
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     app.setApplicationName("VoiceContext")
     app.setOrganizationName("VoiceContext")
-    # Enable high-DPI scaling for crisp rendering on modern displays
-    app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     config = ConfigStore()
     configure_logging(config)
     instance = SingleInstance.acquire()

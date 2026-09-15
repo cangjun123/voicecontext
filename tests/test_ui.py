@@ -37,7 +37,9 @@ def test_main_window_renders_session(qtbot) -> None:
     session.add_speech("test speech", 0, 100)
     session.add_reference("Error: test", content_type="error")
     window.set_session(session)
-    assert window.transcript_edit.toPlainText() == "test speech"
+    # QTextBrowser renders HTML with anchors, so plain text includes the reference marker
+    assert "test speech" in window.transcript_edit.toPlainText()
+    assert "[1]" in window.transcript_edit.toPlainText()
     assert window.ref_count.text() == "1 captured"
     assert window.stop_button.isVisible() is False  # Parent window is not shown in the test.
     assert window.stop_button.isHidden() is False
@@ -195,10 +197,13 @@ def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:
 
     overlay.show_completion("Use A", 1, "copied")
     assert overlay.status.text() == "Completed · Copied"
-    assert overlay.references.text() == "1 references · Click to edit"
+    assert overlay.references.text() == "1 references · Double-click to edit"
     assert overlay._hide_timer.interval() == 4000
+    # Single click should NOT trigger edit anymore
+    qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
+    # Double click should trigger edit
     with qtbot.waitSignal(overlay.edit_requested, timeout=1000):
-        qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
+        qtbot.mouseDClick(overlay.frame, Qt.MouseButton.LeftButton)
 
 
 def test_overlay_compose_failure_is_not_editable(qtbot) -> None:
