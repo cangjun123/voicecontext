@@ -14,11 +14,10 @@ LOG = logging.getLogger("voice_context")
 
 
 def create_tray_icon(color: str = "#0d9488", inactive: bool = False) -> QIcon:
-    # Windows tray typically shows 16x16 or 20x20, so we design at 32px for good scaling
-    # and let Windows scale it down. Using devicePixelRatio for high-DPI crispness.
+    # Windows tray typically displays at 16x16 logical pixels
+    # We create at 16px base and let Qt handle high-DPI scaling
     ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
-    # Design at 32px logical size - Windows will scale to fit tray (usually 16x16 or 20x20)
-    base_size = 32
+    base_size = 16  # Windows tray standard size
     size = int(base_size * ratio)
     pixmap = QPixmap(size, size)
     pixmap.setDevicePixelRatio(ratio)
@@ -33,31 +32,28 @@ def create_tray_icon(color: str = "#0d9488", inactive: bool = False) -> QIcon:
     else:
         bg_color = QColor(color)
     
-    # Full-bleed rounded rect with padding for visibility at small sizes
-    # Leave 2px margin so the icon doesn't get cropped by tray masking
-    margin = int(2 * ratio)
-    rect_size = size - (margin * 2)
+    # Full-bleed rounded rect - no margin, fill entire icon area
     painter.setBrush(bg_color)
-    painter.drawRoundedRect(margin, margin, rect_size, rect_size, int(6 * ratio), int(6 * ratio))
+    painter.drawRoundedRect(0, 0, size, size, int(3 * ratio), int(3 * ratio))
     
-    # Microphone icon - scaled to fit within the padded area
+    # Microphone icon - simple and bold for small size
     painter.setBrush(QColor("white"))
     center_x = size / 2
-    # Mic head (rounded rect) - proportional to 32px base
-    mic_width = int(8 * ratio)
-    mic_height = int(14 * ratio)
-    mic_top = int(6 * ratio)
-    painter.drawRoundedRect(int(center_x - mic_width/2), mic_top, mic_width, mic_height, int(4 * ratio), int(4 * ratio))
+    # Mic head (rounded rect) - proportional to 16px base
+    mic_width = int(4 * ratio)
+    mic_height = int(7 * ratio)
+    mic_top = int(3 * ratio)
+    painter.drawRoundedRect(int(center_x - mic_width/2), mic_top, mic_width, mic_height, int(2 * ratio), int(2 * ratio))
     # Mic stem
-    stem_width = int(2 * ratio)
-    stem_height = int(5 * ratio)
+    stem_width = int(1 * ratio)
+    stem_height = int(2 * ratio)
     stem_top = mic_top + mic_height
     painter.drawRect(int(center_x - stem_width/2), stem_top, stem_width, stem_height)
     # Mic base (wider rounded rect)
-    base_width = int(14 * ratio)
-    base_height = int(3 * ratio)
+    base_width = int(7 * ratio)
+    base_height = int(1.5 * ratio)
     base_top = stem_top + stem_height
-    painter.drawRoundedRect(int(center_x - base_width/2), base_top, base_width, base_height, int(1.5 * ratio), int(1.5 * ratio))
+    painter.drawRoundedRect(int(center_x - base_width/2), base_top, base_width, base_height, int(0.75 * ratio), int(0.75 * ratio))
     
     painter.end()
     return QIcon(pixmap)
