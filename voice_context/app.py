@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QMimeData, QObject, QTimer, Signal
+from PySide6.QtCore import QMimeData, QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -1712,6 +1712,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("VoiceContext")
     app.setOrganizationName("VoiceContext")
+    # Enable high-DPI scaling for crisp rendering on modern displays
+    app.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
+    app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
     config = ConfigStore()
     configure_logging(config)
     instance = SingleInstance.acquire()
