@@ -1073,7 +1073,7 @@ class VoiceContextController(QObject):
         self._save_session()
         self.overlay.show_compose_failure(result.error, len(self._session.references))
         self.tray.showMessage(
-            "VoiceContext generation failed",
+            tr("VoiceContext generation failed"),
             result.error[:500],
             QSystemTrayIcon.MessageIcon.Critical,
             5000,
@@ -1119,15 +1119,15 @@ class VoiceContextController(QObject):
         )
         if warning:
             self.tray.showMessage(
-                "VoiceContext warning",
+                tr("VoiceContext warning"),
                 warning[:500],
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
         if copy_requested and not result.success:
             self.tray.showMessage(
-                "Clipboard copy failed",
-                result.error or "The generated prompt is still available in VoiceContext.",
+                tr("Clipboard copy failed"),
+                result.error or tr("The generated prompt is still available in VoiceContext."),
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
@@ -1184,8 +1184,8 @@ class VoiceContextController(QObject):
             self.overlay.show_capture(reference, should_warn)
         if should_warn:
             self.tray.showMessage(
-                "Sensitive clipboard content",
-                f"Review [{reference.id}] before sending it to a remote service.",
+                tr("Sensitive clipboard content"),
+                tr("Review [{id}] before sending it to a remote service.").format(id=reference.id),
                 QSystemTrayIcon.MessageIcon.Warning,
                 4000,
             )
@@ -1261,7 +1261,7 @@ class VoiceContextController(QObject):
                     )
             if not result.success:
                 self.tray.showMessage(
-                    "Clipboard copy failed",
+                    tr("Clipboard copy failed"),
                     result.error,
                     QSystemTrayIcon.MessageIcon.Warning,
                     5000,
@@ -1340,9 +1340,9 @@ class VoiceContextController(QObject):
             path = self.output.export_markdown(
                 text, str(self.config.get("output.export_directory", "")), session_id
             )
-            self.tray.showMessage("Prompt exported", str(path), QSystemTrayIcon.MessageIcon.Information, 3500)
+            self.tray.showMessage(tr("Prompt exported"), str(path), QSystemTrayIcon.MessageIcon.Information, 3500)
         except OSError as exc:
-            QMessageBox.critical(self.main, "Export failed", str(exc))
+            QMessageBox.critical(self.main, tr("Export failed"), str(exc))
 
     def toggle_overlay(self) -> None:
         if self.overlay.isVisible():
@@ -1471,7 +1471,7 @@ class VoiceContextController(QObject):
         QTimer.singleShot(
             0,
             lambda detail=message: self.tray.showMessage(
-                "VoiceContext hotkey issue",
+                tr("VoiceContext hotkey issue"),
                 detail[:500],
                 QSystemTrayIcon.MessageIcon.Warning,
                 7000,
@@ -1517,7 +1517,7 @@ class VoiceContextController(QObject):
             self.main.set_session(self._session)
         self._update_state_ui()
         self.overlay.set_state("Error", message)
-        self.tray.showMessage("VoiceContext error", message[:500], QSystemTrayIcon.MessageIcon.Critical, 6000)
+        self.tray.showMessage(tr("VoiceContext error"), message[:500], QSystemTrayIcon.MessageIcon.Critical, 6000)
 
     @staticmethod
     def _quiet_stop_realtime(engine: AliyunRealtimeASR) -> None:
