@@ -1409,11 +1409,17 @@ class VoiceContextController(QObject):
         def task():
             return create_asr_engine(config, key).transcribe(Path(path)).text
 
-        self._submit(
-            task,
-            lambda text: QMessageBox.information(window, "ASR test succeeded", text or "The request succeeded but returned no speech."),
-            lambda error: QMessageBox.critical(window, "ASR test failed", error),
-        )
+        def on_success(text):
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.information(window, "ASR test succeeded", text or "The request succeeded but returned no speech.")
+
+        def on_error(error):
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.critical(window, "ASR test failed", error)
+
+        self._submit(task, on_success, on_error)
 
     def _test_llm(self, config: dict, key: str) -> None:
         window = self._settings_window or self.main
@@ -1423,11 +1429,17 @@ class VoiceContextController(QObject):
             ref = ReferenceEvent("ref_1", 1000, "example.py", "file")
             return client.rewrite("请检查这里的错误并给出修改", "speech then reference [ref_1]", [ref])
 
-        self._submit(
-            task,
-            lambda text: QMessageBox.information(window, "LLM test succeeded", text or "The endpoint returned an empty task."),
-            lambda error: QMessageBox.critical(window, "LLM test failed", error),
-        )
+        def on_success(text):
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.information(window, "LLM test succeeded", text or "The endpoint returned an empty task.")
+
+        def on_error(error):
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.critical(window, "LLM test failed", error)
+
+        self._submit(task, on_success, on_error)
 
     def _refresh_history(self) -> None:
         self.main.set_history(self.history.recent(100))

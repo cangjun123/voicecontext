@@ -313,9 +313,9 @@ class SettingsWindow(QDialog):
         self.asr_headers.setMaximumHeight(90)
         self.asr_headers.textChanged.connect(lambda: self._validate_json_field(self.asr_headers))
         form.addRow("Custom headers (JSON)", self.asr_headers)
-        test = QPushButton("Test with a WAV file")
-        test.clicked.connect(self._test_asr)
-        form.addRow("", test)
+        self.asr_test_button = QPushButton("Test with a WAV file")
+        self.asr_test_button.clicked.connect(self._test_asr)
+        form.addRow("", self.asr_test_button)
         return page
 
     def _validate_json_field(self, field: QPlainTextEdit) -> None:
@@ -391,9 +391,9 @@ class SettingsWindow(QDialog):
         self.llm_headers.setMaximumHeight(90)
         self.llm_headers.textChanged.connect(lambda: self._validate_json_field(self.llm_headers))
         form.addRow("Custom headers (JSON)", self.llm_headers)
-        test = QPushButton("Test composer connection")
-        test.clicked.connect(self._test_llm)
-        form.addRow("", test)
+        self.llm_test_button = QPushButton("Test composer connection")
+        self.llm_test_button.clicked.connect(self._test_llm)
+        form.addRow("", self.llm_test_button)
         return page
 
     def _prompt_page(self) -> QWidget:
@@ -647,6 +647,8 @@ class SettingsWindow(QDialog):
             self, "Choose test audio", str(Path.home()), "WAV audio (*.wav)"
         )
         if path:
+            self.asr_test_button.setEnabled(False)
+            self.asr_test_button.setText(tr("Testing..."))
             self.test_asr_requested.emit(copy.deepcopy(self.values["asr"]), self.asr_key.text().strip(), path)
 
     def _test_llm(self) -> None:
@@ -654,4 +656,12 @@ class SettingsWindow(QDialog):
         if not valid:
             QMessageBox.warning(self, "Invalid settings", message)
             return
+        self.llm_test_button.setEnabled(False)
+        self.llm_test_button.setText(tr("Testing..."))
         self.test_llm_requested.emit(copy.deepcopy(self.values["llm"]), self.llm_key.text().strip())
+
+    def restore_test_buttons(self) -> None:
+        self.asr_test_button.setEnabled(True)
+        self.asr_test_button.setText(tr("Test with a WAV file"))
+        self.llm_test_button.setEnabled(True)
+        self.llm_test_button.setText(tr("Test composer connection"))
