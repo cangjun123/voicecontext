@@ -13,22 +13,39 @@ from voice_context.core.session import SessionState
 LOG = logging.getLogger("voice_context")
 
 
-def create_tray_icon(color: str = "#258263") -> QIcon:
+def create_tray_icon(color: str = "#258263", inactive: bool = False) -> QIcon:
     # Support high-DPI displays by scaling the pixmap according to device pixel ratio
     ratio = QGuiApplication.primaryScreen().devicePixelRatio() if QGuiApplication.primaryScreen() else 1.0
-    size = int(32 * ratio)
+    # Larger base size for better visibility
+    base_size = 48
+    size = int(base_size * ratio)
     pixmap = QPixmap(size, size)
     pixmap.setDevicePixelRatio(ratio)
     pixmap.fill(QColor("transparent"))
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(QColor("transparent"))
-    painter.setBrush(QColor(color))
-    painter.drawRoundedRect(5, 3, 22, 26, 6, 6)
+    
+    # Use theme-consistent colors
+    if inactive:
+        # Softer gray for inactive state
+        bg_color = QColor("#9ca3af")
+    else:
+        bg_color = QColor(color)
+    
+    painter.setBrush(bg_color)
+    # Larger, more modern rounded rect
+    painter.drawRoundedRect(6, 4, 36, 40, 8, 8)
+    
+    # Microphone icon - larger and clearer
     painter.setBrush(QColor("white"))
-    painter.drawRoundedRect(13, 8, 6, 11, 3, 3)
-    painter.drawRect(15, 18, 2, 6)
-    painter.drawRoundedRect(10, 22, 12, 2, 1, 1)
+    # Mic head
+    painter.drawRoundedRect(20, 12, 8, 16, 4, 4)
+    # Mic stem
+    painter.drawRect(23, 28, 2, 8)
+    # Mic base
+    painter.drawRoundedRect(16, 34, 16, 3, 1.5, 1.5)
+    
     painter.end()
     return QIcon(pixmap)
 
@@ -93,13 +110,19 @@ class TrayIcon(QSystemTrayIcon):
         self.pause_action.setEnabled(active)
         self.pause_action.setText(tr("Resume" if session_state == SessionState.PAUSED else "Pause"))
         self.setToolTip(f"VoiceContext - {state}")
-        color = (
-            "#d29433"
-            if session_state == SessionState.PAUSED
-            else "#258263"
-            if active
-            else "#3978b8"
-            if busy
-            else "#687078"
-        )
-        self.setIcon(create_tray_icon(color))
+        
+        # Use theme-consistent accent color for active states
+        if session_state == SessionState.PAUSED:
+            color = "#d97706"  # warning amber
+            inactive = False
+        elif active:
+            color = "#0d9488"  # accent teal
+            inactive = False
+        elif busy:
+            color = "#2563eb"  # info blue
+            inactive = False
+        else:
+            color = "#9ca3af"  # neutral gray
+            inactive = True
+            
+        self.setIcon(create_tray_icon(color, inactive))

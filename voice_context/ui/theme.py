@@ -178,6 +178,162 @@ QLineEdit::placeholder, QTextEdit::placeholder, QPlainTextEdit::placeholder {{
     color: {colors['fg_muted']};
 }}
 
+/* ComboBox - Modern dropdown arrow */
+QComboBox {{
+    padding-right: 32px;
+}}
+
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 28px;
+    border: none;
+    border-left: 1px solid {colors['border']};
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    background: {colors['bg_secondary']};
+}}
+
+QComboBox::drop-down:hover {{
+    background: {colors['bg_tertiary']};
+}}
+
+QComboBox::down-arrow {{
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid {colors['fg_secondary']};
+    width: 0;
+    height: 0;
+}}
+
+QComboBox::down-arrow:hover {{
+    border-top-color: {colors['accent']};
+}}
+
+QComboBox QAbstractItemView {{
+    background: {colors['bg_primary']};
+    border: 1px solid {colors['border']};
+    border-radius: 8px;
+    padding: 4px;
+    selection-background-color: {colors['accent_light']};
+    selection-color: {colors['accent']};
+    outline: none;
+}}
+
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px;
+    border-radius: 4px;
+    min-height: 20px;
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background: {colors['bg_tertiary']};
+}}
+
+/* SpinBox - Modern up/down arrows */
+QSpinBox, QDoubleSpinBox {{
+    padding-right: 32px;
+}}
+
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 24px;
+    height: 18px;
+    border: none;
+    border-left: 1px solid {colors['border']};
+    border-bottom: 1px solid {colors['border']};
+    border-top-right-radius: 6px;
+    background: {colors['bg_secondary']};
+}}
+
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+    background: {colors['bg_tertiary']};
+}}
+
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {{
+    background: {colors['accent_light']};
+}}
+
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 24px;
+    height: 18px;
+    border: none;
+    border-left: 1px solid {colors['border']};
+    border-bottom-right-radius: 6px;
+    background: {colors['bg_secondary']};
+}}
+
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {colors['bg_tertiary']};
+}}
+
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background: {colors['accent_light']};
+}}
+
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid {colors['fg_secondary']};
+    width: 0;
+    height: 0;
+}}
+
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
+    border-bottom-color: {colors['accent']};
+}}
+
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {colors['fg_secondary']};
+    width: 0;
+    height: 0;
+}}
+
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
+    border-top-color: {colors['accent']};
+}}
+
+/* CheckBox - Theme consistent */
+QCheckBox {{
+    spacing: 8px;
+}}
+
+QCheckBox::indicator {{
+    width: 18px;
+    height: 18px;
+    border: 2px solid {colors['border']};
+    border-radius: 4px;
+    background: {colors['bg_primary']};
+}}
+
+QCheckBox::indicator:hover {{
+    border-color: {colors['accent']};
+}}
+
+QCheckBox::indicator:checked {{
+    background: {colors['accent']};
+    border-color: {colors['accent']};
+    image: none;
+}}
+
+QCheckBox::indicator:checked:hover {{
+    background: {colors['accent_hover']};
+    border-color: {colors['accent_hover']};
+}}
+
+QCheckBox::indicator:indeterminate {{
+    background: {colors['accent']};
+    border-color: {colors['accent']};
+}}
+
 /* Lists and Tables */
 QListWidget, QTableWidget {{
     background: {colors['bg_primary']};
