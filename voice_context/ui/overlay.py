@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QMouseEvent
+from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -21,6 +22,7 @@ from .i18n import tr, translate_widget_tree
 
 class OverlayWindow(QWidget):
     edit_requested = Signal()
+    dismiss_requested = Signal()
 
     COLORS = {
         "Idle": "#778089",
@@ -71,6 +73,13 @@ class OverlayWindow(QWidget):
         header.addWidget(self.status)
         header.addStretch()
         header.addWidget(self.timer_label)
+        self.close_button = QPushButton("×")
+        self.close_button.setObjectName("overlayClose")
+        self.close_button.setFixedSize(20, 20)
+        self.close_button.setToolTip(tr("Dismiss"))
+        self.close_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.close_button.clicked.connect(self._dismiss)
+        header.addWidget(self.close_button)
         layout.addLayout(header)
         self.transcript = QLabel("")
         self.transcript.setWordWrap(True)
@@ -121,14 +130,22 @@ class OverlayWindow(QWidget):
     def _apply_style(self, state: str) -> None:
         color = self.COLORS.get(state, self.COLORS["Idle"])
         self.dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
-        cursor = "PointingHandCursor" if state == "PromptReady" else "ArrowCursor"
         self.frame.setStyleSheet(
             "QFrame#overlayFrame { background: rgba(30, 33, 37, 242); "
             "border: 1px solid rgba(255,255,255,35); border-radius: 7px; } "
             "QLabel { color: #f2f3f4; } QProgressBar { background: #45494e; border: none; } "
-            f"QProgressBar::chunk {{ background: {color}; }}"
+            f"QProgressBar::chunk {{ background: {color}; }} "
+            "QPushButton#overlayClose { background: transparent; color: rgba(255,255,255,120); "
+            "border: none; border-radius: 10px; font-size: 15px; font-weight: 400; padding: 0px; } "
+            "QPushButton#overlayClose:hover { background: rgba(255,255,255,40); color: #ffffff; } "
+            "QPushButton#overlayClose:pressed { background: rgba(255,255,255,60); }"
         )
         self.frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if state == "PromptReady" else Qt.CursorShape.ArrowCursor))
+
+    def _dismiss(self) -> None:
+        self._hide_timer.stop()
+        self.hide()
+        self.dismiss_requested.emit()
 
     def enterEvent(self, event) -> None:
         self._hovering = True
@@ -243,7 +260,7 @@ class OverlayWindow(QWidget):
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
         self.transcript.setText(prompt.strip())
         self._scroll_transcript_to_top()
-        footer = tr("{count} references · Double-click to edit").format(count=reference_count)
+        footer = tr("{count} references · Double-click to edit · × to dismiss").format(count=reference_count)
         self.references.setText(footer)
         self.level.hide()
         self._hide_timer.stop()
@@ -304,6 +321,9 @@ class OverlayWindow(QWidget):
             event.accept()
 
     def eventFilter(self, watched, event) -> bool:
+        # Let the close button handle its own mouse events so it stays clickable.
+        if watched is self.close_button:
+            return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._pointer_press(event)
             return True

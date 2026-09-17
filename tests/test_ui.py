@@ -197,7 +197,7 @@ def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:
 
     overlay.show_completion("Use A", 1, "copied")
     assert overlay.status.text() == "Completed · Copied"
-    assert overlay.references.text() == "1 references · Double-click to edit"
+    assert overlay.references.text() == "1 references · Double-click to edit · × to dismiss"
     assert overlay._hide_timer.interval() == 4000
     # Single click should NOT trigger edit anymore
     qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
