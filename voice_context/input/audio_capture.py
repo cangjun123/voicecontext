@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import array
+import json
 import math
 import threading
 import time
@@ -30,6 +32,10 @@ class AudioCapture(QObject):
         self._frames: list[bytes] = []
         self._lock = threading.RLock()
         self._stream = None
+        self._capture_rate = self.sample_rate
+        self._previous_sample: int | None = None
+        self._input_sample_index = 0
+        self._next_output_position = 0
         self._started_at = 0.0
         self._silent_since: float | None = None
         self._silence_emitted = False
@@ -55,26 +61,71 @@ class AudioCapture(QObject):
         self._started_at = time.monotonic()
         self._silent_since = None
         self._silence_emitted = False
-        device = self.config.get("input_device") or None
+        device = self.resolve_input_device(self.config.get("input_device"))
+        self._previous_sample = None
+        self._input_sample_index = 0
+        self._next_output_position = 0
         block_ms = int(self.config.get("audio_chunk_ms", 100))
+        native_rate = int(sd.query_devices(device, "input")["default_samplerate"])
         try:
-            self._stream = sd.RawInputStream(
-                samplerate=self.sample_rate,
-                blocksize=max(256, int(self.sample_rate * block_ms / 1000)),
-                device=device,
-                channels=self.channels,
-                dtype="int16",
-                callback=self._callback,
-            )
-            self._stream.start()
+            self._start_stream(device, self.sample_rate, block_ms)
+        except Exception as original_error:
+            if native_rate == self.sample_rate:
+                raise
+            try:
+                self._start_stream(device, native_rate, block_ms)
+            except Exception as native_error:
+                raise RuntimeError(
+                    f"Could not open input at {self.sample_rate} Hz ({original_error}) "
+                    f"or its native {native_rate} Hz ({native_error})"
+                ) from native_error
+
+    def _start_stream(self, device: int | None, rate: int, block_ms: int) -> None:
+        self._capture_rate = rate
+        stream = sd.RawInputStream(
+            samplerate=rate,
+            blocksize=max(256, int(rate * block_ms / 1000)),
+            device=device,
+            channels=self.channels,
+            dtype="int16",
+            callback=self._callback,
+        )
+        try:
+            stream.start()
         except Exception:
-            self._stream = None
+            stream.close()
             raise
+        self._stream = stream
+
+    def _resample(self, raw: bytes) -> bytes:
+        if self._capture_rate == self.sample_rate:
+            return raw
+        samples = array.array("h")
+        samples.frombytes(raw)
+        output = array.array("h")
+        target_rate = self.sample_rate
+        source_rate = self._capture_rate
+        for current in samples:
+            previous = self._previous_sample
+            if previous is None:
+                output.append(current)
+                self._next_output_position = source_rate
+            else:
+                end = self._input_sample_index * target_rate
+                start = end - target_rate
+                while self._next_output_position <= end:
+                    fraction = self._next_output_position - start
+                    interpolated = previous + (current - previous) * fraction / target_rate
+                    output.append(max(-32768, min(32767, round(interpolated))))
+                    self._next_output_position += source_rate
+            self._previous_sample = current
+            self._input_sample_index += 1
+        return output.tobytes()
 
     def _callback(self, indata, frames, time_info, status) -> None:
         if status:
             self.error.emit(str(status))
-        raw = bytes(indata)
+        raw = self._resample(bytes(indata))
         with self._lock:
             self._frames.append(raw)
         if not raw:
@@ -117,9 +168,12 @@ class AudioCapture(QObject):
         self._chunk_consumer = consumer
 
     def snapshot(self, output_path: Path | None = None) -> Path:
-        cache = APP_DIR / "audio_cache"
-        cache.mkdir(parents=True, exist_ok=True)
-        path = output_path or cache / f"capture-{time.time_ns()}.wav"
+        if output_path is None:
+            cache = APP_DIR / "audio_cache"
+            cache.mkdir(parents=True, exist_ok=True)
+            path = cache / f"capture-{time.time_ns()}.wav"
+        else:
+            path = output_path
         with self._lock:
             frames = list(self._frames)
         with wave.open(str(path), "wb") as wav:
@@ -144,6 +198,49 @@ class AudioCapture(QObject):
         if sd is None:
             return []
         try:
-            return [dict(item) for item in sd.query_devices() if item.get("max_input_channels", 0) > 0]
+            hostapis = sd.query_hostapis()
+            devices = []
+            for index, item in enumerate(sd.query_devices()):
+                if item.get("max_input_channels", 0) <= 0:
+                    continue
+                entry = dict(item)
+                entry["index"] = index
+                entry["hostapi_name"] = hostapis[item["hostapi"]]["name"]
+                entry["id"] = "pa:" + json.dumps(
+                    [entry["hostapi_name"], entry["name"], index],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                devices.append(entry)
+            return devices
         except Exception:
             return []
+
+    @staticmethod
+    def resolve_input_device(value: Any) -> int | None:
+        if not value:
+            return None
+        devices = AudioCapture.devices()
+        if str(value).startswith("pa:"):
+            try:
+                hostapi, name, old_index = json.loads(str(value)[3:])
+            except (ValueError, TypeError) as exc:
+                raise ValueError("The saved input device ID is invalid.") from exc
+            matches = [
+                item for item in devices
+                if item["hostapi_name"] == hostapi and item["name"] == name
+            ]
+            for item in matches:
+                if item["index"] == old_index:
+                    return item["index"]
+            if len(matches) == 1:
+                return matches[0]["index"]
+        else:
+            matches = [item for item in devices if item["name"] == str(value)]
+            if matches:
+                default_index = sd.default.device[0]
+                for item in matches:
+                    if item["index"] == default_index:
+                        return default_index
+                return matches[0]["index"]
+        raise ValueError(f"Input device {value!r} was not found. Choose an available device in Settings > ASR.")

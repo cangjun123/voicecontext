@@ -31,7 +31,7 @@ from voice_context.storage.config_store import APP_DIR, ConfigStore
 from voice_context.storage.secrets import SecretStore
 from voice_context.storage.session_store import SessionStore
 from voice_context.ui.main_window import MainWindow
-from voice_context.ui.i18n import set_language
+from voice_context.ui.i18n import set_language, tr
 from voice_context.ui.overlay import OverlayWindow
 from voice_context.ui.settings_window import SettingsWindow
 from voice_context.ui.theme import apply_theme

@@ -357,6 +357,23 @@ def test_settings_switches_between_remote_asr_defaults(qtbot, tmp_path) -> None:
     assert window.asr_base_url.text() == "https://api.openai.com/v1"
 
 
+def test_settings_distinguishes_identical_microphone_names(qtbot, tmp_path, monkeypatch) -> None:
+    devices = [
+        {"index": 1, "name": "Microphone", "hostapi_name": "MME", "id": "pa:mme"},
+        {"index": 2, "name": "Microphone", "hostapi_name": "Windows WASAPI", "id": "pa:wasapi"},
+    ]
+    monkeypatch.setattr("voice_context.ui.settings_window.AudioCapture.devices", lambda: devices)
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("asr.input_device", "pa:wasapi")
+    window = SettingsWindow(config, MemorySecrets())
+    qtbot.addWidget(window)
+
+    assert window.asr_input_device.count() == 3
+    assert window.asr_input_device.itemText(1) == "Microphone (MME)"
+    assert window.asr_input_device.itemText(2) == "Microphone (Windows WASAPI)"
+    assert window.asr_input_device.currentData() == "pa:wasapi"
+
+
 def test_hotkey_capture_records_pressed_combination(qtbot) -> None:
     edit = HotkeyCaptureEdit("ctrl+alt+v")
     qtbot.addWidget(edit)

@@ -329,6 +329,7 @@ def test_controller_fails_clearly_when_nothing_was_recognized(
     monkeypatch.setattr(application, "set_startup", lambda enabled: None)
     monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
     monkeypatch.setattr(application, "AliyunRealtimeASR", SilentRealtimeASR)
+    monkeypatch.setattr(application, "AudioCapture", lambda values: FakeRealtimeAudio({"test_directory": str(tmp_path)}))
     monkeypatch.setattr(
         application,
         "LLMComposerClient",

@@ -353,9 +353,20 @@ class SettingsWindow(QDialog):
         for device in devices:
             name = device.get("name", "")
             if name:
-                self.asr_input_device.addItem(name, name)
+                label = f"{name} ({device['hostapi_name']})"
+                self.asr_input_device.addItem(label, device["id"])
         if current:
             index = self.asr_input_device.findData(current)
+            if index < 0:
+                try:
+                    device_index = AudioCapture.resolve_input_device(current)
+                    matching = next(
+                        (item for item in devices if item["index"] == device_index), None
+                    )
+                    if matching is not None:
+                        index = self.asr_input_device.findData(matching["id"])
+                except ValueError:
+                    pass
             if index >= 0:
                 self.asr_input_device.setCurrentIndex(index)
             else:
