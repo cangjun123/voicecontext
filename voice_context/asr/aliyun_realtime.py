@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, Signal
 
+from voice_context.core.events import join_speech_segments
+
 from .base import ASRError, TranscriptionResult
 
 
@@ -200,10 +202,10 @@ class AliyunRealtimeASR(QObject):
                 self._partial = ""
             else:
                 self._partial = text
-            full_text = " ".join(
+            full_text = join_speech_segments(
                 [segment["text"] for segment in self._final_segments]
                 + ([self._partial] if self._partial else [])
-            ).strip()
+            )
         self.transcript_updated.emit(full_text)
 
     def _set_error(self, message: str) -> None:
@@ -233,7 +235,7 @@ class AliyunRealtimeASR(QObject):
                 segments.append(
                     {"text": self._partial, "start_ms": last_end, "end_ms": last_end}
                 )
-            text = " ".join(segment["text"] for segment in segments).strip()
+            text = join_speech_segments(segment["text"] for segment in segments)
         if error:
             raise ASRError(error)
         return RealtimeRecognitionResult(

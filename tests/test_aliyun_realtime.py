@@ -52,10 +52,15 @@ def test_realtime_events_replace_partial_and_accumulate_finals(qtbot) -> None:
     engine._handle_event(Result({"text": "帮我修复", "begin_time": 0}))
     engine._handle_event(Result({"text": "帮我修复。", "begin_time": 0, "end_time": 800}))
     engine._handle_event(Result({"text": "谢谢", "begin_time": 900}))
-    assert observed == ["帮我", "帮我修复", "帮我修复。", "帮我修复。 谢谢"]
+    assert observed == ["帮我", "帮我修复", "帮我修复。", "帮我修复。谢谢"]
     result = engine.stop()
-    assert result.text == "帮我修复。 谢谢"
+    assert result.text == "帮我修复。谢谢"
     assert result.segments[0] == {"text": "帮我修复。", "start_ms": 0, "end_ms": 800}
+
+    en_engine = AliyunRealtimeASR({"base_url": "https://workspace.example/api/v1"}, "key")
+    en_engine._handle_event(Result({"text": "fix this.", "begin_time": 0, "end_time": 500}))
+    en_engine._handle_event(Result({"text": "thanks", "begin_time": 600}))
+    assert en_engine.stop().text == "fix this. thanks"
 
 
 def test_realtime_requires_api_key() -> None:

@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
     history_selected = Signal(str)
     history_delete_requested = Signal(str)
     history_search_requested = Signal(str)
+    history_open_requested = Signal(str, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,6 +105,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_history())
         content_layout.addWidget(self.pages, 1)
         outer.addWidget(content, 1)
+        self._update_prompt_action_buttons()
         translate_widget_tree(self)
 
     def _nav_button(self, text: str, index: int) -> QPushButton:
@@ -227,6 +229,7 @@ class MainWindow(QMainWindow):
         font.setFamily("Cascadia Mono")
         font.setPointSize(10)
         self.prompt_edit.setFont(font)
+        self.prompt_edit.textChanged.connect(self._update_prompt_action_buttons)
         right_layout.addWidget(self.prompt_edit, 1)
         actions = QHBoxLayout()
         self.copy_button = QPushButton("Save and copy")
@@ -472,10 +475,7 @@ class MainWindow(QMainWindow):
                 else QStyle.StandardPixmap.SP_MediaPause
             )
         )
-        ready = state == SessionState.PROMPT_READY
-        self.copy_button.setEnabled(ready)
-        self.paste_button.setEnabled(ready)
-        self.regenerate_button.setEnabled(ready)
+        self._update_prompt_action_buttons()
         messages = {
             SessionState.IDLE: "Ready for a voice session",
             SessionState.ARMED: "Starting microphone and speech recognition",
@@ -486,6 +486,43 @@ class MainWindow(QMainWindow):
             SessionState.ERROR: "The session encountered an error",
         }
         self.context_label.setText(tr(messages.get(state, state.value)))
+
+    def _update_prompt_action_buttons(self) -> None:
+        state = self._session.state if self._session else SessionState.IDLE
+        busy_or_active = state in {
+            SessionState.ARMED,
+            SessionState.LISTENING,
+            SessionState.PAUSED,
+            SessionState.COMPOSING,
+        }
+        has_prompt_text = bool(self.prompt_edit.toPlainText().strip())
+        can_deliver = not busy_or_active and (
+            state == SessionState.PROMPT_READY or has_prompt_text
+        )
+        can_regen = bool(self._session and self._session.can_regenerate)
+        self.copy_button.setEnabled(can_deliver)
+        self.paste_button.setEnabled(can_deliver)
+        self.regenerate_button.setEnabled(can_regen)
+
+    def retranslate_ui(self, session: VoiceSession | None = None) -> None:
+        translate_widget_tree(self)
+        current_index = self.pages.currentIndex()
+        self.heading.setText(tr("Workspace" if current_index == 0 else "History"))
+        if session is not None:
+            self._session = session
+            self._rebuild_references(session)
+        else:
+            self.ref_count.setText(f"0 {tr('captured')}")
+        if current_index == 1:
+            self.context_label.setText(tr("Browse saved prompts and transcripts"))
+            self._update_prompt_action_buttons()
+        else:
+            state = self._session.state if self._session else SessionState.IDLE
+            self.set_state(state)
+            if self._session and state in {SessionState.PROMPT_READY, SessionState.ERROR} and (
+                self._session.asr_metadata or self._session.composer_metadata
+            ):
+                self.set_completion_receipt(self._session)
 
     @staticmethod
     def _filter_history_rows(rows: list[dict], query: str) -> list[dict]:
@@ -543,8 +580,12 @@ class MainWindow(QMainWindow):
     def _open_history_in_workspace(self) -> None:
         text = self.history_prompt.toPlainText()
         if text:
+            session_id = self._selected_history_id()
+            self.history_open_requested.emit(session_id, text)
             self.prompt_edit.setPlainText(text)
             self._show_page(0)
+            self._update_prompt_action_buttons()
+            self.prompt_edit.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _delete_history(self) -> None:
         session_id = self._selected_history_id()

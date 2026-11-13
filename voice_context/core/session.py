@@ -8,7 +8,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable
 
-from .events import ContentType, ReferenceEvent, SessionEvent, SpeechEvent, TimelineEvent
+from .events import (
+    ContentType,
+    ReferenceEvent,
+    SessionEvent,
+    SpeechEvent,
+    TimelineEvent,
+    join_speech_segments,
+)
 
 
 class SessionState(str, Enum):
@@ -38,7 +45,7 @@ ALLOWED_TRANSITIONS: dict[SessionState, set[SessionState]] = {
     },
     SessionState.COMPOSING: {SessionState.PROMPT_READY, SessionState.ERROR},
     SessionState.PROMPT_READY: {SessionState.IDLE, SessionState.COMPOSING, SessionState.ERROR},
-    SessionState.ERROR: {SessionState.IDLE},
+    SessionState.ERROR: {SessionState.IDLE, SessionState.COMPOSING},
 }
 
 
@@ -94,6 +101,9 @@ class VoiceSession:
             self.events.append(SessionEvent("state", self.elapsed_ms(), {"state": target.value}))
             if target == SessionState.LISTENING and self.started_at_ms is None:
                 self.started_at_ms = now_ms()
+            if target == SessionState.COMPOSING:
+                self.error = ""
+                self.ended_at_ms = None
             if target in {SessionState.PROMPT_READY, SessionState.ERROR}:
                 self.ended_at_ms = now_ms()
 
@@ -111,10 +121,22 @@ class VoiceSession:
 
     @property
     def transcript(self) -> str:
-        final = " ".join(event.text.strip() for event in self.speech_events if event.is_final and event.text.strip())
+        parts = [
+            event.text.strip()
+            for event in self.speech_events
+            if event.is_final and event.text.strip()
+        ]
         if self.partial_transcript.strip():
-            return " ".join(part for part in (final, self.partial_transcript.strip()) if part)
-        return final
+            parts.append(self.partial_transcript.strip())
+        return join_speech_segments(parts)
+
+    @property
+    def can_regenerate(self) -> bool:
+        if self.state == SessionState.PROMPT_READY:
+            return True
+        if self.state == SessionState.ERROR:
+            return bool(self.transcript.strip() or self.references)
+        return False
 
     def set_partial(self, text: str) -> None:
         with self._lock:

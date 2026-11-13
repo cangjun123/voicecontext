@@ -619,3 +619,58 @@ def test_controller_microphone_asr_test_records_and_transcribes(
     assert dialogs == [("ASR test succeeded", "fake spoken task")]
     assert not (tmp_path / "fake.wav").exists()
     controller.shutdown()
+
+
+def test_controller_can_regenerate_after_llm_error_and_hot_switches_language(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("general.language", "zh_CN")
+    config.set("asr.streaming_partial", False)
+    config.set("output.copy_to_clipboard", False)
+    config.set("llm.enabled", True)
+    config.save()
+
+    attempts = {"count": 0}
+
+    class FlakyThenHealthyLLM:
+        def __init__(self, _cfg, _key) -> None:
+            self.on_stream = None
+            self.last_response_text = ""
+            self.last_metadata = {"streamed": True, "response_model": "flaky-v1"}
+
+        def rewrite(self, transcript, timeline, references) -> str:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise application.LLMError("Transient gateway timeout")
+            self.last_response_text = f"Recovered: [ref_1] ({transcript})"
+            return self.last_response_text
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", lambda values: FakeAudio(tmp_path))
+    monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
+    monkeypatch.setattr(application, "LLMComposerClient", FlakyThenHealthyLLM)
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    assert controller.main.workspace_nav.text() == "工作台"
+    config.set("general.language", "en")
+    controller._settings_saved()
+    assert controller.main.workspace_nav.text() == "Workspace"
+
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.LISTENING)
+    controller._session.add_reference("auth.py")
+    controller.finish_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.ERROR)
+    assert controller.main.regenerate_button.isEnabled() is True
+
+    controller.regenerate()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.PROMPT_READY)
+    assert attempts["count"] == 2
+    assert "Recovered: auth.py" in controller._session.final_prompt
+    controller.shutdown()

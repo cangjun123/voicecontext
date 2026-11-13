@@ -75,3 +75,20 @@ def test_generic_event_uses_camel_case_timestamp() -> None:
         "timestampMs": 42,
         "payload": {"state": "Idle"},
     }
+
+
+def test_cjk_transcript_joins_without_ascii_spaces_and_error_can_regenerate() -> None:
+    session = VoiceSession()
+    session.transition(SessionState.LISTENING)
+    session.add_speech("先看这个函数。", 0, 500)
+    session.add_speech("再补充单测。", 600, 1100)
+    assert session.transcript == "先看这个函数。再补充单测。"
+
+    session.transition(SessionState.COMPOSING)
+    session.error = "LLM timed out"
+    session.transition(SessionState.ERROR)
+    assert session.can_regenerate is True
+
+    session.transition(SessionState.COMPOSING)
+    assert session.error == ""
+    assert session.ended_at_ms is None

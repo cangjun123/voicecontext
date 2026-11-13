@@ -1,10 +1,42 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
 ContentType = Literal["file", "code", "error", "log", "url", "text"]
+
+_FULLWIDTH_TRAILING_PUNCT = frozenset("，。！？；：、）】》」』”’")
+
+
+def _is_cjk_or_fullwidth(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x3000 <= code <= 0x30FF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xFF01 <= code <= 0xFF60
+    )
+
+
+def join_speech_segments(parts: Iterable[str]) -> str:
+    """Join speech segments without injecting ASCII spaces between CJK clauses."""
+    cleaned = [part.strip() for part in parts if part and part.strip()]
+    if not cleaned:
+        return ""
+    output = [cleaned[0]]
+    for part in cleaned[1:]:
+        left_char = output[-1][-1]
+        right_char = part[0]
+        if (
+            _is_cjk_or_fullwidth(left_char) and _is_cjk_or_fullwidth(right_char)
+        ) or left_char in _FULLWIDTH_TRAILING_PUNCT:
+            output.append(part)
+        else:
+            output.append(" ")
+            output.append(part)
+    return "".join(output)
 
 
 @dataclass(slots=True)

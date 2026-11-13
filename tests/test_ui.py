@@ -277,14 +277,20 @@ def test_overlay_compose_failure_is_not_editable(qtbot) -> None:
     overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
     qtbot.addWidget(overlay)
     observed = []
+    workspace_spy = QSignalSpy(overlay.workspace_requested)
     overlay.edit_requested.connect(observed.append)
-    overlay.show_compose_failure("LLM timed out", 2)
+    overlay.show_compose_failure("LLM timed out", 2, retryable=True)
 
     qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
 
     assert observed == []
     assert overlay.status.text() == "Generation failed"
     assert overlay.transcript.text() == "LLM timed out"
+    assert "Double-click to retry" in overlay.references.text()
+
+    qtbot.mouseDClick(overlay.frame, Qt.MouseButton.LeftButton)
+    assert workspace_spy.count() == 1
+    assert overlay.isVisible() is False
 
 
 def test_dragging_completion_overlay_does_not_open_editor(qtbot) -> None:
@@ -536,3 +542,76 @@ def test_settings_reports_entering_and_leaving_hotkeys_page(qtbot, tmp_path) -> 
     settings.nav.setCurrentRow(0)
     assert entered.count() == 1
     assert exited.count() == 1
+
+
+def test_opening_history_in_workspace_enables_copy_and_paste_while_idle(qtbot) -> None:
+    set_language("en")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.copy_button.isEnabled() is False
+    assert window.paste_button.isEnabled() is False
+
+    window.set_history(
+        [
+            {
+                "id": "hist-1",
+                "created_at_ms": 1700000000000,
+                "transcript": "old voice note",
+                "final_prompt": "Refactor the auth middleware",
+                "reference_count": 1,
+                "source_app": "Code.exe",
+            }
+        ]
+    )
+    window.show_history_prompt("Refactor the auth middleware")
+    window._open_history_in_workspace()
+
+    assert window.pages.currentIndex() == 0
+    assert window.prompt_edit.toPlainText() == "Refactor the auth middleware"
+    assert window.copy_button.isEnabled() is True
+    assert window.paste_button.isEnabled() is True
+
+
+def test_external_hotkey_occupancy_does_not_block_saving_unrelated_settings(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    set_language("en")
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.HotkeyManager.availability",
+        staticmethod(lambda _text: (False, "Already occupied by another application")),
+    )
+    config = ConfigStore(tmp_path / "config.json")
+    window = SettingsWindow(config, MemorySecrets())
+    qtbot.addWidget(window)
+    assert window.hotkey_status["toggle_overlay"].text() == "Conflict"
+
+    window.llm_provider.setCurrentIndex(window.llm_provider.findData("ollama"))
+    saved = QSignalSpy(window.saved)
+    window._save()
+    assert saved.count() == 1
+    assert config.get("llm.provider") == "ollama"
+
+
+def test_runtime_language_retranslation_switches_both_ways(qtbot) -> None:
+    set_language("zh_CN")
+    window = MainWindow()
+    tray = TrayIcon()
+    qtbot.addWidget(window)
+    assert window.workspace_nav.text() == "工作台"
+    assert window.copy_button.text() == "保存并复制"
+    assert tray.start_action.text() == "开始听取"
+
+    set_language("en")
+    window.retranslate_ui()
+    tray.retranslate_ui()
+    assert window.workspace_nav.text() == "Workspace"
+    assert window.copy_button.text() == "Save and copy"
+    assert tray.start_action.text() == "Start listening"
+
+    set_language("zh_CN")
+    window.retranslate_ui()
+    tray.retranslate_ui()
+    assert window.workspace_nav.text() == "工作台"
+    assert window.copy_button.text() == "保存并复制"
+    assert tray.start_action.text() == "开始听取"
+    set_language("en")

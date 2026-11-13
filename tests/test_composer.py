@@ -59,3 +59,21 @@ def test_two_repeated_demonstratives_resolve_to_nearby_clipboard_content() -> No
 
     output = RuleComposer().compose(session, ComposeOptions(use_llm=True), Rewriter())
     assert output == "把A和B合并一下"
+
+
+def test_template_single_pass_preserves_braces_in_references_and_uppercase_ref_markers() -> None:
+    class UppercaseRewriter:
+        def rewrite(self, transcript, timeline, references):
+            return "Inspect [REF_1] and [Ref_2]"
+
+    session = VoiceSession(source_app="Code.exe")
+    session.add_speech("检查模板变量", 0, 500)
+    session.add_reference("const tpl = '{{timestamp}} {{references}}';", captured_at_ms=600)
+    session.add_reference("{{transcript}} literal", captured_at_ms=800)
+
+    output = RuleComposer().compose(
+        session,
+        ComposeOptions(target="codex_cli", use_llm=True),
+        UppercaseRewriter(),
+    )
+    assert output == "Inspect const tpl = '{{timestamp}} {{references}}'; and {{transcript}} literal"

@@ -56,10 +56,10 @@ class RuleComposer:
 
     @staticmethod
     def materialize_references(task: str, references: list[ReferenceEvent]) -> str:
-        by_id = {reference.id: reference.content for reference in references}
+        by_id = {reference.id.lower(): reference.content for reference in references}
         return re.sub(
             r"\[(ref_\d+)\]",
-            lambda match: by_id.get(match.group(1), match.group(0)),
+            lambda match: by_id.get(match.group(1).lower(), match.group(0)),
             task,
             flags=re.IGNORECASE,
         )

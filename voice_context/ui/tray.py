@@ -57,34 +57,44 @@ class TrayIcon(QSystemTrayIcon):
 
     def __init__(self, parent=None) -> None:
         super().__init__(create_tray_icon(), parent)
+        self._current_state = "Idle"
         self.setToolTip("VoiceContext - Idle")
         menu = QMenu()
         self.start_action = QAction(tr("Start listening"), self)
         self.finish_action = QAction(tr("Stop and compose"), self)
         self.pause_action = QAction(tr("Pause"), self)
-        show_action = QAction(tr("Show window"), self)
-        settings_action = QAction(tr("Settings"), self)
-        recent_action = QAction(tr("Recent prompts"), self)
-        exit_action = QAction(tr("Exit"), self)
+        self.show_action = QAction(tr("Show window"), self)
+        self.settings_action = QAction(tr("Settings"), self)
+        self.recent_action = QAction(tr("Recent prompts"), self)
+        self.exit_action = QAction(tr("Exit"), self)
         self.start_action.triggered.connect(self.start_requested)
         self.finish_action.triggered.connect(self.finish_requested)
         self.pause_action.triggered.connect(self.pause_requested)
-        show_action.triggered.connect(self.show_requested)
-        settings_action.triggered.connect(self.settings_requested)
-        recent_action.triggered.connect(self.recent_requested)
-        exit_action.triggered.connect(self.exit_requested)
+        self.show_action.triggered.connect(self.show_requested)
+        self.settings_action.triggered.connect(self.settings_requested)
+        self.recent_action.triggered.connect(self.recent_requested)
+        self.exit_action.triggered.connect(self.exit_requested)
         menu.addAction(self.start_action)
         menu.addAction(self.finish_action)
         menu.addAction(self.pause_action)
         menu.addSeparator()
-        menu.addAction(show_action)
-        menu.addAction(settings_action)
-        menu.addAction(recent_action)
+        menu.addAction(self.show_action)
+        menu.addAction(self.settings_action)
+        menu.addAction(self.recent_action)
         menu.addSeparator()
-        menu.addAction(exit_action)
+        menu.addAction(self.exit_action)
         self.setContextMenu(menu)
         self.activated.connect(self._activated)
         self.set_state("Idle")
+
+    def retranslate_ui(self) -> None:
+        self.start_action.setText(tr("Start listening"))
+        self.finish_action.setText(tr("Stop and compose"))
+        self.show_action.setText(tr("Show window"))
+        self.settings_action.setText(tr("Settings"))
+        self.recent_action.setText(tr("Recent prompts"))
+        self.exit_action.setText(tr("Exit"))
+        self.set_state(self._current_state)
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         LOG.info("Tray activated: %s", reason.name)
@@ -95,6 +105,7 @@ class TrayIcon(QSystemTrayIcon):
             self.show_requested.emit()
 
     def set_state(self, state: str) -> None:
+        self._current_state = state
         try:
             session_state = SessionState(state)
         except ValueError:

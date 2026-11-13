@@ -208,6 +208,7 @@ class VoiceContextController(QObject):
         self.main.history_selected.connect(self._load_history_prompt)
         self.main.history_delete_requested.connect(self._delete_history)
         self.main.history_search_requested.connect(self._search_history)
+        self.main.history_open_requested.connect(self._on_history_opened_in_workspace)
         self.overlay.edit_requested.connect(self._prepare_inline_overlay_edit)
         self.overlay.inline_save_requested.connect(self._save_inline_overlay_edit)
         self.overlay.workspace_requested.connect(self._open_workspace_from_overlay)
@@ -237,9 +238,14 @@ class VoiceContextController(QObject):
         self.clipboard_watcher.captured.connect(self._clipboard_captured)
 
     def _apply_runtime_settings(self, initial: bool = False) -> None:
+        set_language(str(self.config.get("general.language", "en")))
         apply_theme(self.app, str(self.config.get("general.theme", "system")))
         self.overlay.config = self.config.section("general")
         self.overlay.setWindowOpacity(float(self.config.get("general.overlay_opacity", 0.94)))
+        if not initial:
+            self.main.retranslate_ui(self._session)
+            self.tray.retranslate_ui()
+            self.overlay.retranslate_ui()
         self.clipboard_watcher.config = self.config.section("clipboard")
         self.hotkeys.register(self.config.section("hotkeys"))
         try:
@@ -1126,7 +1132,11 @@ class VoiceContextController(QObject):
         self._update_state_ui()
         self.main.set_completion_receipt(self._session, result.warning)
         self._save_session()
-        self.overlay.show_compose_failure(result.error, len(self._session.references))
+        self.overlay.show_compose_failure(
+            result.error,
+            len(self._session.references),
+            retryable=self._session.can_regenerate,
+        )
         self.tray.showMessage(
             tr("VoiceContext generation failed"),
             result.error[:500],
@@ -1207,7 +1217,7 @@ class VoiceContextController(QObject):
             self._refresh_history()
 
     def regenerate(self) -> None:
-        if not self._session or self._session.state != SessionState.PROMPT_READY:
+        if not self._session or not self._session.can_regenerate:
             return
         self._session.transition(SessionState.COMPOSING)
         self._update_state_ui()
@@ -1314,6 +1324,9 @@ class VoiceContextController(QObject):
                         len(self._session.references),
                         "copied" if result.success else "failed",
                     )
+            elif not quiet and result.success:
+                self.main.context_label.setText(tr("Prompt copied"))
+                self.overlay.show_completion(text, 0, "copied")
             if not result.success:
                 self.tray.showMessage(
                     tr("Clipboard copy failed"),
@@ -1444,13 +1457,30 @@ class VoiceContextController(QObject):
 
     def _open_workspace_from_overlay(self, draft_text: str = "") -> None:
         self._inline_return_hwnd = 0
-        if not self._session or self._session.state != SessionState.PROMPT_READY:
+        if not self._session or self._session.state not in {
+            SessionState.PROMPT_READY,
+            SessionState.ERROR,
+        }:
             return
         self.main.set_session(self._session)
         if draft_text.strip():
             self.main.update_prompt(draft_text)
         self.main.set_completion_receipt(self._session)
-        self.main.focus_prompt_editor()
+        if self._session.state == SessionState.PROMPT_READY:
+            self.main.focus_prompt_editor()
+        else:
+            self.main._show_page(0)
+            self.main.show_normal()
+            if self.main.regenerate_button.isEnabled():
+                self.main.regenerate_button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _on_history_opened_in_workspace(self, session_id: str, _text: str) -> None:
+        if self.active:
+            return
+        if self._session and self._session.id != session_id:
+            self._session = None
+            self.main.set_session(VoiceSession())
+            self._update_state_ui()
 
     def _edit_prompt_from_overlay(self) -> None:
         self._open_workspace_from_overlay()

@@ -76,6 +76,7 @@ class OverlayWindow(QWidget):
         self._pinned_position = False
         self._hovering = False
         self._editing = False
+        self._retryable_error = False
         self._completed_prompt = ""
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -207,7 +208,8 @@ class OverlayWindow(QWidget):
         self.frame.setCursor(
             QCursor(
                 Qt.CursorShape.PointingHandCursor
-                if state == "PromptReady" and not self._editing
+                if (state == "PromptReady" and not self._editing)
+                or (state == "Error" and self._retryable_error)
                 else Qt.CursorShape.ArrowCursor
             )
         )
@@ -302,8 +304,13 @@ class OverlayWindow(QWidget):
         if not self._hovering and not self._editing:
             self.hide()
 
+    def retranslate_ui(self) -> None:
+        translate_widget_tree(self)
+        self.close_button.setToolTip(tr("Dismiss"))
+
     def set_state(self, state: str, detail: str = "") -> None:
         self._leave_inline_edit_ui()
+        self._retryable_error = False
         self._state = state
         labels = {"PromptReady": "Prompt copied", "Composing": "Composing"}
         self.status.setText(tr(labels.get(state, state)))
@@ -397,6 +404,7 @@ class OverlayWindow(QWidget):
         restore_original: bool = False,
     ) -> None:
         self._leave_inline_edit_ui()
+        self._retryable_error = False
         self._state = "PromptReady"
         self._completed_prompt = prompt.strip()
         titles = {
@@ -419,16 +427,22 @@ class OverlayWindow(QWidget):
         self.show_without_focus()
         self._hide_timer.start(int(self.config.get("completion_overlay_duration_ms", 4000)))
 
-    def show_compose_failure(self, detail: str, reference_count: int) -> None:
+    def show_compose_failure(
+        self, detail: str, reference_count: int, retryable: bool = True
+    ) -> None:
         self._leave_inline_edit_ui()
+        self._retryable_error = retryable
         self._state = "Error"
         self.status.setText(tr("Generation failed"))
         self._apply_style("Error")
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
         self.transcript.setText(tr(detail))
-        self.references.setText(
-            tr("Transcript and {count} references were preserved").format(count=reference_count)
+        footer_template = (
+            "Transcript and {count} references were preserved · Double-click to retry"
+            if retryable
+            else "Transcript and {count} references were preserved"
         )
+        self.references.setText(tr(footer_template).format(count=reference_count))
         self.level.hide()
         self._hide_timer.stop()
         self.show_without_focus()
@@ -492,8 +506,7 @@ class OverlayWindow(QWidget):
             self._pointer_press(event)
             return True
         if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-            if self._state == "PromptReady" and not self._editing:
-                self.start_inline_edit()
+            self._handle_double_click()
             return True
         if event.type() == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
             self._pointer_move(event)
@@ -530,9 +543,17 @@ class OverlayWindow(QWidget):
             self.move(position - self._drag_origin)
             self._pinned_position = True
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._state == "PromptReady" and not self._editing:
+    def _handle_double_click(self) -> None:
+        if self._state == "PromptReady" and not self._editing:
             self.start_inline_edit()
+        elif self._state == "Error" and self._retryable_error:
+            self._hide_timer.stop()
+            self.hide()
+            self.workspace_requested.emit("")
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._handle_double_click()
             event.accept()
 
     def _pointer_release(self) -> None:

@@ -272,7 +272,7 @@ class SettingsWindow(QDialog):
             label.setText(tr("Conflict"))
             label.setStyleSheet("color: #c85a5a;")
             # Show detailed conflict message in tooltip and as status tip
-            label.setToolTip(message)
+            label.setToolTip(tr(message))
             # Also check for internal duplicates
             duplicates = HotkeyManager.duplicate_conflicts(self.values.get("hotkeys", {}))
             if text and text in duplicates:
@@ -539,7 +539,7 @@ class SettingsWindow(QDialog):
         if duplicates:
             return False, "Duplicate hotkeys: " + ", ".join(duplicates)
         for value in hotkeys:
-            valid, message = HotkeyManager.availability(value)
+            valid, message = HotkeyManager.validate(value)
             if not valid:
                 return False, f"Invalid hotkey {value!r}: {message}"
         target = self.values["prompt"]["target"]

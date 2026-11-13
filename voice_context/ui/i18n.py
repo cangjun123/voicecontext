@@ -54,6 +54,8 @@ ZH_CN = {
     "Generation failed": "生成失败",
     "No speech was recognized.": "未识别到语音内容。",
     "Transcript and {count} references were preserved": "转写和 {count} 个引用已保留",
+    "Transcript and {count} references were preserved · Double-click to retry": "转写和 {count} 个引用已保留 · 双击进入工作台重试",
+    "Already occupied by another application": "已被其他应用程序占用",
     "{count} references": "{count} 个引用",
     "succeeded": "成功",
     "listening": "听取中",
@@ -291,6 +293,9 @@ ZH_CN = {
 }
 
 
+_EN_FROM_ZH = {value: key for key, value in ZH_CN.items()}
+
+
 def set_language(language: str) -> None:
     global _language
     _language = language
@@ -300,27 +305,99 @@ def tr(text: str) -> str:
     return ZH_CN.get(text, text) if _language == "zh_CN" else text
 
 
+def _translate_bound_text(holder, prop_name: str, current: str) -> str | None:
+    if not current:
+        return None
+    stored = holder.property(prop_name)
+    if isinstance(stored, str) and stored and current in {stored, ZH_CN.get(stored, stored)}:
+        source = stored
+    elif current in ZH_CN or current in _EN_FROM_ZH:
+        source = _EN_FROM_ZH.get(current, current)
+        holder.setProperty(prop_name, source)
+    else:
+        return None
+    return tr(source)
+
+
 def translate_widget_tree(root: QWidget) -> None:
-    root.setWindowTitle(tr(root.windowTitle()))
+    title = _translate_bound_text(root, "_i18n_win_title", root.windowTitle())
+    if title is not None:
+        root.setWindowTitle(title)
     widgets = [root, *root.findChildren(QWidget)]
     for widget in widgets:
         if isinstance(widget, (QAbstractButton, QLabel)):
-            widget.setText(tr(widget.text()))
+            translated = _translate_bound_text(widget, "_i18n_text", widget.text())
+            if translated is not None:
+                widget.setText(translated)
         if widget.toolTip():
-            widget.setToolTip(tr(widget.toolTip()))
+            tip = _translate_bound_text(widget, "_i18n_tooltip", widget.toolTip())
+            if tip is not None:
+                widget.setToolTip(tip)
         if isinstance(widget, QComboBox):
+            sources = widget.property("_i18n_combo_items")
+            source_map = dict(sources) if isinstance(sources, dict) else {}
             for index in range(widget.count()):
-                widget.setItemText(index, tr(widget.itemText(index)))
+                current_item = widget.itemText(index)
+                stored_item = source_map.get(index)
+                if stored_item and current_item in {stored_item, ZH_CN.get(stored_item, stored_item)}:
+                    src = stored_item
+                elif current_item in ZH_CN or current_item in _EN_FROM_ZH:
+                    src = _EN_FROM_ZH.get(current_item, current_item)
+                    source_map[index] = src
+                else:
+                    continue
+                widget.setItemText(index, tr(src))
+            if source_map:
+                widget.setProperty("_i18n_combo_items", source_map)
         if isinstance(widget, QListWidget):
+            sources = widget.property("_i18n_list_items")
+            source_map = dict(sources) if isinstance(sources, dict) else {}
             for index in range(widget.count()):
-                widget.item(index).setText(tr(widget.item(index).text()))
+                list_item = widget.item(index)
+                current_item = list_item.text()
+                stored_item = source_map.get(index)
+                if stored_item and current_item in {stored_item, ZH_CN.get(stored_item, stored_item)}:
+                    src = stored_item
+                elif current_item in ZH_CN or current_item in _EN_FROM_ZH:
+                    src = _EN_FROM_ZH.get(current_item, current_item)
+                    source_map[index] = src
+                else:
+                    continue
+                list_item.setText(tr(src))
+            if source_map:
+                widget.setProperty("_i18n_list_items", source_map)
         if isinstance(widget, (QLineEdit, QPlainTextEdit, QTextEdit)):
-            widget.setPlaceholderText(tr(widget.placeholderText()))
+            placeholder = _translate_bound_text(
+                widget, "_i18n_placeholder", widget.placeholderText()
+            )
+            if placeholder is not None:
+                widget.setPlaceholderText(placeholder)
         if isinstance(widget, QTableWidget):
+            sources = widget.property("_i18n_table_headers")
+            source_map = dict(sources) if isinstance(sources, dict) else {}
             for column in range(widget.columnCount()):
                 item = widget.horizontalHeaderItem(column)
-                if item:
-                    item.setText(tr(item.text()))
+                if not item:
+                    continue
+                current_header = item.text()
+                stored_header = source_map.get(column)
+                if stored_header and current_header in {
+                    stored_header,
+                    ZH_CN.get(stored_header, stored_header),
+                }:
+                    src = stored_header
+                elif current_header in ZH_CN or current_header in _EN_FROM_ZH:
+                    src = _EN_FROM_ZH.get(current_header, current_header)
+                    source_map[column] = src
+                else:
+                    continue
+                item.setText(tr(src))
+            if source_map:
+                widget.setProperty("_i18n_table_headers", source_map)
     for action in root.findChildren(QAction):
-        action.setText(tr(action.text()))
-        action.setToolTip(tr(action.toolTip()))
+        act_text = _translate_bound_text(action, "_i18n_text", action.text())
+        if act_text is not None:
+            action.setText(act_text)
+        act_tip = _translate_bound_text(action, "_i18n_tooltip", action.toolTip())
+        if act_tip is not None:
+            action.setToolTip(act_tip)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import re
+
+_TEMPLATE_VAR_RE = re.compile(r"\{\{(\w+)\}\}")
+
 DEFAULT_TEMPLATES: dict[str, str] = {
     "generic_markdown": """Task:
 {{task}}
@@ -33,9 +37,10 @@ Use these references verbatim:
 
 
 def render_template(template: str, values: dict[str, str]) -> str:
-    rendered = template
-    for key, value in values.items():
-        rendered = rendered.replace("{{" + key + "}}", value)
+    rendered = _TEMPLATE_VAR_RE.sub(
+        lambda match: values.get(match.group(1), match.group(0)),
+        template,
+    )
     return rendered.strip()
 
 
