@@ -82,6 +82,26 @@ class SessionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def search(self, query: str, limit: int = 100) -> list[dict[str, Any]]:
+        needle = query.strip()
+        if not needle:
+            return self.recent(limit)
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, created_at_ms, ended_at_ms, transcript, final_prompt, source_app, reference_count
+                FROM sessions
+                WHERE transcript LIKE ? ESCAPE '\\'
+                   OR final_prompt LIKE ? ESCAPE '\\'
+                   OR source_app LIKE ? ESCAPE '\\'
+                ORDER BY created_at_ms DESC LIMIT ?
+                """,
+                (pattern, pattern, pattern, max(1, min(limit, 500))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get(self, session_id: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute("SELECT data_json FROM sessions WHERE id = ?", (session_id,)).fetchone()

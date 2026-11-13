@@ -136,6 +136,33 @@ def test_llm_openai_response_and_immutable_reference_context(monkeypatch) -> Non
     }
 
 
+def test_llm_stream_callback_receives_progressive_text_and_zero_ref_prompt(monkeypatch) -> None:
+    streamed: list[str] = []
+    observed_prompt = ""
+
+    def stream(method, url, **kwargs):
+        nonlocal observed_prompt
+        observed_prompt = kwargs["json"]["messages"][1]["content"]
+        return FakeStreamResponse(
+            [
+                {"id": "req-1", "model": "coder", "choices": [{"delta": {"content": "整理后的"}}]},
+                {"id": "req-1", "model": "coder", "choices": [{"delta": {"content": "完整指令"}}]},
+                "[DONE]",
+            ]
+        )
+
+    monkeypatch.setattr("voice_context.llm.client.httpx.stream", stream)
+    client = LLMComposerClient(
+        {"provider": "openai_compatible", "base_url": "https://host/v1", "model": "coder"},
+        "key",
+        on_stream=streamed.append,
+    )
+    result = client.rewrite("嗯那个整理一下", "0-1000 ms speech: 嗯那个整理一下", [])
+    assert result == "整理后的完整指令"
+    assert streamed == ["整理后的", "整理后的完整指令"]
+    assert "do not emit any [ref_n] placeholders" in observed_prompt
+
+
 def test_openai_root_urls_gain_v1_prefix(monkeypatch, tmp_path) -> None:
     observed = []
 

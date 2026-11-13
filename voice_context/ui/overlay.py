@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -20,8 +21,31 @@ from voice_context.core.session import VoiceSession
 from .i18n import tr, translate_widget_tree
 
 
+class _InlinePromptEdit(QPlainTextEdit):
+    commit_requested = Signal()
+    cancel_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        modifiers = event.modifiers()
+        if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter} and (
+            modifiers & Qt.KeyboardModifier.ControlModifier
+        ):
+            self.commit_requested.emit()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class OverlayWindow(QWidget):
     edit_requested = Signal()
+    inline_save_requested = Signal(str)
+    workspace_requested = Signal(str)
+    inline_cancelled = Signal()
     dismiss_requested = Signal()
 
     COLORS = {
@@ -51,6 +75,8 @@ class OverlayWindow(QWidget):
         self._dragging = False
         self._pinned_position = False
         self._hovering = False
+        self._editing = False
+        self._completed_prompt = ""
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._on_hide_timer_timeout)
@@ -107,10 +133,40 @@ class OverlayWindow(QWidget):
         self.transcript.setStyleSheet("background: transparent;")
         self.transcript_scroll.setStyleSheet("QScrollArea { background: transparent; }")
         layout.addWidget(self.transcript_scroll)
+        self.editor = _InlinePromptEdit()
+        self.editor.setObjectName("overlayEditor")
+        self.editor.setMinimumHeight(96)
+        self.editor.setMaximumHeight(160)
+        self.editor.setVisible(False)
+        self.editor.commit_requested.connect(self._commit_inline_edit)
+        self.editor.cancel_requested.connect(self._cancel_inline_edit)
+        layout.addWidget(self.editor)
         self.references = QLabel("")
         self.references.setWordWrap(True)
         self.references.setStyleSheet("color: #aeb5bd; font-size: 11px;")
         layout.addWidget(self.references)
+        self.edit_actions = QWidget()
+        edit_actions_layout = QHBoxLayout(self.edit_actions)
+        edit_actions_layout.setContentsMargins(0, 2, 0, 0)
+        edit_actions_layout.setSpacing(6)
+        self.inline_save_button = QPushButton("Save and copy")
+        self.inline_save_button.setObjectName("overlayPrimary")
+        self.inline_save_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.inline_save_button.clicked.connect(self._commit_inline_edit)
+        self.inline_workspace_button = QPushButton("Open in workspace")
+        self.inline_workspace_button.setObjectName("overlaySecondary")
+        self.inline_workspace_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.inline_workspace_button.clicked.connect(self._open_in_workspace)
+        self.inline_cancel_button = QPushButton("Cancel")
+        self.inline_cancel_button.setObjectName("overlaySecondary")
+        self.inline_cancel_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.inline_cancel_button.clicked.connect(self._cancel_inline_edit)
+        edit_actions_layout.addWidget(self.inline_save_button)
+        edit_actions_layout.addWidget(self.inline_workspace_button)
+        edit_actions_layout.addStretch()
+        edit_actions_layout.addWidget(self.inline_cancel_button)
+        self.edit_actions.setVisible(False)
+        layout.addWidget(self.edit_actions)
         self.level = QProgressBar()
         self.level.setRange(0, 100)
         self.level.setTextVisible(False)
@@ -138,14 +194,97 @@ class OverlayWindow(QWidget):
             "QPushButton#overlayClose { background: transparent; color: rgba(255,255,255,120); "
             "border: none; border-radius: 10px; font-size: 15px; font-weight: 400; padding: 0px; } "
             "QPushButton#overlayClose:hover { background: rgba(255,255,255,40); color: #ffffff; } "
-            "QPushButton#overlayClose:pressed { background: rgba(255,255,255,60); }"
+            "QPushButton#overlayClose:pressed { background: rgba(255,255,255,60); } "
+            "QPlainTextEdit#overlayEditor { background: rgba(18, 20, 23, 230); color: #f2f3f4; "
+            "border: 1px solid rgba(40, 161, 117, 180); border-radius: 5px; padding: 5px 6px; font-size: 12px; } "
+            "QPushButton#overlayPrimary { background: #28a175; color: #ffffff; border: none; "
+            "border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; } "
+            "QPushButton#overlayPrimary:hover { background: #2fb886; } "
+            "QPushButton#overlaySecondary { background: rgba(255,255,255,22); color: #e2e6ea; "
+            "border: 1px solid rgba(255,255,255,35); border-radius: 4px; padding: 4px 8px; font-size: 11px; } "
+            "QPushButton#overlaySecondary:hover { background: rgba(255,255,255,38); color: #ffffff; }"
         )
-        self.frame.setCursor(QCursor(Qt.CursorShape.PointingHandCursor if state == "PromptReady" else Qt.CursorShape.ArrowCursor))
+        self.frame.setCursor(
+            QCursor(
+                Qt.CursorShape.PointingHandCursor
+                if state == "PromptReady" and not self._editing
+                else Qt.CursorShape.ArrowCursor
+            )
+        )
 
     def _dismiss(self) -> None:
+        was_editing = self._editing
+        self.finish_inline_edit()
         self._hide_timer.stop()
         self.hide()
+        if was_editing:
+            self.inline_cancelled.emit()
         self.dismiss_requested.emit()
+
+    def _restore_non_activating_mode(self) -> None:
+        if not self.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating):
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        if not (self.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus):
+            self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, True)
+
+    def _leave_inline_edit_ui(self) -> None:
+        if not self._editing and not self.editor.isVisible():
+            return
+        self._editing = False
+        self.editor.setVisible(False)
+        self.edit_actions.setVisible(False)
+        self.transcript_scroll.setVisible(True)
+        self.references.setVisible(True)
+        self.setMaximumHeight(250)
+        self._restore_non_activating_mode()
+
+    def start_inline_edit(self) -> None:
+        if self._state != "PromptReady":
+            return
+        self._hide_timer.stop()
+        self._editing = True
+        self.setMaximumHeight(330)
+        self.status.setText(tr("Editing · Ctrl+Enter to save & copy"))
+        self._apply_style("PromptReady")
+        self.transcript_scroll.setVisible(False)
+        self.references.setVisible(False)
+        self.editor.setPlainText(self._completed_prompt)
+        cursor = self.editor.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.editor.setTextCursor(cursor)
+        self.editor.setVisible(True)
+        self.edit_actions.setVisible(True)
+        self.edit_requested.emit()
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus, False)
+        if not self._pinned_position:
+            self.reposition()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.editor.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def finish_inline_edit(self) -> None:
+        self._leave_inline_edit_ui()
+        self._hide_timer.stop()
+        self.hide()
+
+    def _commit_inline_edit(self) -> None:
+        text = self.editor.toPlainText().strip()
+        if not text:
+            return
+        self._completed_prompt = text
+        self.finish_inline_edit()
+        self.inline_save_requested.emit(text)
+
+    def _cancel_inline_edit(self) -> None:
+        self.finish_inline_edit()
+        self.inline_cancelled.emit()
+
+    def _open_in_workspace(self) -> None:
+        text = self.editor.toPlainText()
+        self.finish_inline_edit()
+        self.workspace_requested.emit(text)
 
     def enterEvent(self, event) -> None:
         self._hovering = True
@@ -155,15 +294,16 @@ class OverlayWindow(QWidget):
 
     def leaveEvent(self, event) -> None:
         self._hovering = False
-        if self._state in {"PromptReady", "Error", "Idle"}:
+        if not self._editing and self._state in {"PromptReady", "Error", "Idle"}:
             self._hide_timer.start(int(self.config.get("overlay_duration_ms", 2600)))
         super().leaveEvent(event)
 
     def _on_hide_timer_timeout(self) -> None:
-        if not self._hovering:
+        if not self._hovering and not self._editing:
             self.hide()
 
     def set_state(self, state: str, detail: str = "") -> None:
+        self._leave_inline_edit_ui()
         self._state = state
         labels = {"PromptReady": "Prompt copied", "Composing": "Composing"}
         self.status.setText(tr(labels.get(state, state)))
@@ -176,6 +316,16 @@ class OverlayWindow(QWidget):
         self.show_without_focus()
         if state in {"PromptReady", "Error", "Idle"} and not self._hovering:
             self._hide_timer.start(int(self.config.get("overlay_duration_ms", 2600)))
+
+    def set_composing_stream(self, text: str) -> None:
+        value = text.strip()
+        if not value or self._state != "Composing":
+            return
+        if self.transcript.text() == value:
+            return
+        self.transcript.setTextFormat(Qt.TextFormat.PlainText)
+        self.transcript.setText(value)
+        self._scroll_transcript_to_latest()
 
     def set_transcript(self, text: str) -> None:
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
@@ -246,7 +396,9 @@ class OverlayWindow(QWidget):
         *,
         restore_original: bool = False,
     ) -> None:
+        self._leave_inline_edit_ui()
         self._state = "PromptReady"
+        self._completed_prompt = prompt.strip()
         titles = {
             "copied": "Completed · Copied",
             "not_requested": "Completed · Not copied",
@@ -258,7 +410,7 @@ class OverlayWindow(QWidget):
         self.status.setText(tr(title))
         self._apply_style("Error" if clipboard_state == "failed" else "PromptReady")
         self.transcript.setTextFormat(Qt.TextFormat.PlainText)
-        self.transcript.setText(prompt.strip())
+        self.transcript.setText(self._completed_prompt)
         self._scroll_transcript_to_top()
         footer = tr("{count} references · Double-click to edit · × to dismiss").format(count=reference_count)
         self.references.setText(footer)
@@ -268,6 +420,7 @@ class OverlayWindow(QWidget):
         self._hide_timer.start(int(self.config.get("completion_overlay_duration_ms", 4000)))
 
     def show_compose_failure(self, detail: str, reference_count: int) -> None:
+        self._leave_inline_edit_ui()
         self._state = "Error"
         self.status.setText(tr("Generation failed"))
         self._apply_style("Error")
@@ -320,18 +473,27 @@ class OverlayWindow(QWidget):
             self._pointer_press(event)
             event.accept()
 
+    def _is_interactive_child(self, watched) -> bool:
+        if watched in {
+            self.close_button,
+            self.editor,
+            self.inline_save_button,
+            self.inline_workspace_button,
+            self.inline_cancel_button,
+        }:
+            return True
+        return isinstance(watched, QWidget) and self.editor.isAncestorOf(watched)
+
     def eventFilter(self, watched, event) -> bool:
-        # Let the close button handle its own mouse events so it stays clickable.
-        if watched is self.close_button:
+        # Let interactive buttons and the inline editor handle their own mouse/key events.
+        if self._is_interactive_child(watched):
             return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._pointer_press(event)
             return True
         if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
-            if self._state == "PromptReady":
-                self._hide_timer.stop()
-                self.hide()
-                self.edit_requested.emit()
+            if self._state == "PromptReady" and not self._editing:
+                self.start_inline_edit()
             return True
         if event.type() == QEvent.Type.MouseMove and event.buttons() & Qt.MouseButton.LeftButton:
             self._pointer_move(event)
@@ -369,10 +531,8 @@ class OverlayWindow(QWidget):
             self._pinned_position = True
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._state == "PromptReady":
-            self._hide_timer.stop()
-            self.hide()
-            self.edit_requested.emit()
+        if event.button() == Qt.MouseButton.LeftButton and self._state == "PromptReady" and not self._editing:
+            self.start_inline_edit()
             event.accept()
 
     def _pointer_release(self) -> None:

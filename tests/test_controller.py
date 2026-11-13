@@ -132,6 +132,7 @@ class FakeSingleInstance(QObject):
 
 def test_controller_composes_and_saves_a_session(qtbot, qapp, monkeypatch, tmp_path) -> None:
     config = ConfigStore(tmp_path / "config.json")
+    config.set("general.language", "en")
     config.set("advanced.start_minimized", False)
     config.set("asr.streaming_partial", False)
     config.set("output.auto_paste", False)
@@ -463,4 +464,158 @@ def test_silence_split_restarts_capture_before_transcription_finishes(
     qtbot.waitUntil(lambda: controller._pending_segments == 0, timeout=5000)
     assert controller._session.transcript == "first segment"
     controller.cancel_session()
+    controller.shutdown()
+
+
+def test_realtime_capture_starts_mic_before_websocket_and_flushes_prebuffer(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("asr.provider", "aliyun_realtime")
+    config.set("asr.model", "fun-asr-realtime")
+    config.set("output.copy_to_clipboard", False)
+    events: list[str] = []
+    received_chunks: list[bytes] = []
+
+    class PrebufferAudio(FakeAudio):
+        def __init__(self, _cfg) -> None:
+            super().__init__(tmp_path)
+            self._prebuffered: list[bytes] = []
+            self.consumer = None
+
+        def start(self) -> None:
+            events.append("audio.start")
+            # Speech uttered while WebSocket is still connecting
+            self._prebuffered.append(b"\x01\x02" * 400)
+
+        def flush_and_set_chunk_consumer(self, consumer) -> None:
+            events.append("audio.flush")
+            for chunk in self._prebuffered:
+                consumer(chunk)
+            self.consumer = consumer
+
+    class HandshakeASR(FakeRealtimeASR):
+        def start(self) -> None:
+            events.append("engine.start")
+            super().start()
+
+        def send_audio(self, data: bytes) -> None:
+            received_chunks.append(data)
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", PrebufferAudio)
+    monkeypatch.setattr(application, "AliyunRealtimeASR", HandshakeASR)
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state.value == "Listening", timeout=5000)
+    assert events == ["audio.start", "engine.start", "audio.flush"]
+    assert received_chunks == [b"\x01\x02" * 400]
+    controller.cancel_session()
+    controller.shutdown()
+
+
+def test_controller_polishes_without_references_when_skip_disabled_and_streams_overlay(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    config.set("general.language", "en")
+    config.set("asr.streaming_partial", False)
+    config.set("output.copy_to_clipboard", False)
+    config.set("llm.enabled", True)
+    config.set("llm.skip_without_references", False)
+    config.save()
+
+    stream_released = threading.Event()
+    first_chunk_sent = threading.Event()
+
+    class StreamingPolishLLM:
+        def __init__(self, cfg, api_key) -> None:
+            self.on_stream = None
+            self.last_response_text = ""
+            self.last_metadata = {"streamed": True, "response_model": "polisher-v1"}
+
+        def rewrite(self, transcript, timeline, references) -> str:
+            assert references == []
+            if self.on_stream:
+                self.on_stream("Polished live chunk")
+                first_chunk_sent.set()
+            stream_released.wait(5)
+            self.last_response_text = "Polished final instruction"
+            return self.last_response_text
+
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", lambda values: FakeAudio(tmp_path))
+    monkeypatch.setattr(application.VoiceContextController, "_engine", lambda self: FakeASR())
+    monkeypatch.setattr(application, "LLMComposerClient", StreamingPolishLLM)
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller.start_session()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.LISTENING)
+    controller.finish_session()
+    qtbot.waitUntil(first_chunk_sent.is_set, timeout=5000)
+    qtbot.waitUntil(
+        lambda: controller.overlay.transcript.text() == "Polished live chunk",
+        timeout=5000,
+    )
+    stream_released.set()
+    qtbot.waitUntil(lambda: controller._session.state == application.SessionState.PROMPT_READY)
+    assert controller._session.final_prompt == "Polished final instruction"
+
+    # Inline edit save from overlay updates prompt, copies quietly, and restores focus
+    activated = []
+    monkeypatch.setattr(
+        application,
+        "get_foreground_info",
+        lambda: application.ForegroundInfo(
+            process="Code.exe", title="Editor", pid=999999, hwnd=98765
+        ),
+    )
+    monkeypatch.setattr(application, "activate_window", lambda hwnd: activated.append(hwnd) or True)
+    controller.output.copy_verified = lambda text, cb: cb(ClipboardWriteResult(True, 1))
+    controller.overlay.start_inline_edit()
+    assert controller._inline_return_hwnd == 98765
+    controller.overlay.editor.setPlainText("Inline edited instruction")
+    controller.overlay._commit_inline_edit()
+    assert activated == [98765]
+    assert controller._session.final_prompt == "Inline edited instruction"
+    assert controller.overlay.isVisible() is False
+    controller.shutdown()
+
+
+def test_controller_microphone_asr_test_records_and_transcribes(
+    qtbot, qapp, monkeypatch, tmp_path
+) -> None:
+    config = ConfigStore(tmp_path / "config.json")
+    config.set("advanced.start_minimized", False)
+    monkeypatch.setattr(application, "ConfigStore", lambda: config)
+    monkeypatch.setattr(application, "SecretStore", MemorySecrets)
+    monkeypatch.setattr(application, "SessionStore", lambda: SessionStore(tmp_path / "history.sqlite3"))
+    monkeypatch.setattr(application, "set_startup", lambda enabled: None)
+    monkeypatch.setattr(application.HotkeyManager, "register", lambda self, hotkeys: [])
+    monkeypatch.setattr(application, "AudioCapture", lambda _cfg: FakeAudio(tmp_path))
+    monkeypatch.setattr(application, "create_asr_engine", lambda cfg, key: FakeASR())
+
+    dialogs: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        application.QMessageBox,
+        "information",
+        lambda parent, title, text: dialogs.append((title, text)),
+    )
+
+    controller = application.VoiceContextController(qapp, FakeSingleInstance())
+    controller._test_asr_mic({"provider": "openai_compatible"}, "key", duration_s=0.01)
+    qtbot.waitUntil(lambda: len(dialogs) == 1, timeout=5000)
+    assert dialogs == [("ASR test succeeded", "fake spoken task")]
+    assert not (tmp_path / "fake.wav").exists()
     controller.shutdown()

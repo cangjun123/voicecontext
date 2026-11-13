@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,19 +16,31 @@ class LLMError(RuntimeError):
 
 
 class LLMComposerClient:
-    def __init__(self, config: dict[str, Any], api_key: str = "") -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        api_key: str = "",
+        on_stream: Callable[[str], None] | None = None,
+    ) -> None:
         self.config = config
         self.api_key = api_key
+        self.on_stream = on_stream
         self.last_response_text = ""
         self.last_metadata: dict[str, Any] = {}
 
-    def rewrite(self, transcript: str, timeline: str, references: list[ReferenceEvent]) -> str:
+    def rewrite(
+        self,
+        transcript: str,
+        timeline: str,
+        references: list[ReferenceEvent],
+        on_stream: Callable[[str], None] | None = None,
+    ) -> str:
         provider = self.config.get("provider", "openai_compatible")
         if provider in {"disabled", "rules"}:
             return ""
         if provider == "custom_http":
             return self._custom_rewrite(transcript, timeline, references)
-        return self._chat_rewrite(transcript, timeline, references)
+        return self._chat_rewrite(transcript, timeline, references, on_stream=on_stream)
 
     def _base_url(self) -> str:
         base = str(self.config.get("base_url", "")).strip().rstrip("/")
@@ -57,12 +70,18 @@ class LLMComposerClient:
             if self.config.get("preserve_chinese", True)
             else "Use the clearest appropriate language."
         )
-        resolve_rule = (
-            "Resolve every demonstrative such as 'this', 'that', 'here', or '这个' to the appropriate [ref_n]. "
-            "Use copy timestamps and live_transcript_at_copy to distinguish repeated demonstratives."
-            if self.config.get("resolve_references", True)
-            else "Do not infer links between demonstratives and references."
-        )
+        if not references:
+            resolve_rule = (
+                "No clipboard references were captured in this session; "
+                "do not emit any [ref_n] placeholders."
+            )
+        elif self.config.get("resolve_references", True):
+            resolve_rule = (
+                "Resolve every demonstrative such as 'this', 'that', 'here', or '这个' to the appropriate [ref_n]. "
+                "Use copy timestamps and live_transcript_at_copy to distinguish repeated demonstratives."
+            )
+        else:
+            resolve_rule = "Do not infer links between demonstratives and references."
         polish_rule = (
             "Remove spoken repetition and polish the task."
             if self.config.get("polish", True)
@@ -76,10 +95,17 @@ class LLMComposerClient:
             "Return one natural instruction only. Do not include headings, a References section, Markdown, or commentary."
         )
 
-    def _chat_rewrite(self, transcript: str, timeline: str, references: list[ReferenceEvent]) -> str:
+    def _chat_rewrite(
+        self,
+        transcript: str,
+        timeline: str,
+        references: list[ReferenceEvent],
+        on_stream: Callable[[str], None] | None = None,
+    ) -> str:
         url = self._base_url()
         if not url.endswith("/chat/completions"):
             url += "/chat/completions"
+        stream_callback = on_stream or self.on_stream
         body = {
             "model": self.config.get("model", ""),
             "temperature": float(self.config.get("temperature", 0.2)),
@@ -130,6 +156,7 @@ class LLMComposerClient:
                     choices = payload.get("choices", [])
                     if not isinstance(choices, list):
                         raise TypeError("choices must be an array")
+                    before_len = len(chunks)
                     for choice in choices:
                         if not isinstance(choice, dict):
                             continue
@@ -139,6 +166,10 @@ class LLMComposerClient:
                         message = choice.get("message", {})
                         if isinstance(message, dict):
                             chunks.extend(self._content_text(message.get("content")))
+                    if stream_callback is not None and len(chunks) > before_len:
+                        partial_text = "".join(chunks).strip()
+                        if partial_text:
+                            stream_callback(partial_text)
             self.last_response_text = "".join(chunks).strip()
             self.last_metadata = {
                 "request_id": request_id,

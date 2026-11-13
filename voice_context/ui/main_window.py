@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
     reference_update_requested = Signal(str, str, str)
     history_selected = Signal(str)
     history_delete_requested = Signal(str)
+    history_search_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -58,6 +60,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 620)
         self._force_close = False
         self._session: VoiceSession | None = None
+        self._all_history_rows: list[dict] = []
         self._history_ids: list[str] = []
 
         root = QWidget()
@@ -256,7 +259,13 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         layout.addLayout(self._section_header("Session history", "Saved prompts and their source transcripts"))
+        self.history_search = QLineEdit()
+        self.history_search.setClearButtonEnabled(True)
+        self.history_search.setPlaceholderText("Search history (transcript, prompt, source app)...")
+        self.history_search.textChanged.connect(self._on_history_search_changed)
+        layout.addWidget(self.history_search)
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.history_table = QTableWidget(0, 4)
         self.history_table.setHorizontalHeaderLabels(["Time", "Transcript", "References", "Source"])
@@ -478,7 +487,33 @@ class MainWindow(QMainWindow):
         }
         self.context_label.setText(tr(messages.get(state, state.value)))
 
+    @staticmethod
+    def _filter_history_rows(rows: list[dict], query: str) -> list[dict]:
+        needle = query.strip().lower()
+        if not needle:
+            return rows
+        return [
+            row
+            for row in rows
+            if needle in str(row.get("transcript", "")).lower()
+            or needle in str(row.get("final_prompt", "")).lower()
+            or needle in str(row.get("source_app", "")).lower()
+        ]
+
+    def _on_history_search_changed(self, text: str) -> None:
+        self._render_history_rows(self._filter_history_rows(self._all_history_rows, text))
+        self.history_search_requested.emit(text)
+
     def set_history(self, rows: list[dict]) -> None:
+        self._all_history_rows = list(rows)
+        self._render_history_rows(
+            self._filter_history_rows(self._all_history_rows, self.history_search.text())
+        )
+
+    def set_filtered_history(self, rows: list[dict]) -> None:
+        self._render_history_rows(rows)
+
+    def _render_history_rows(self, rows: list[dict]) -> None:
         self._history_ids = [str(row["id"]) for row in rows]
         self.history_table.setRowCount(len(rows))
         for index, row in enumerate(rows):

@@ -44,6 +44,7 @@ class SettingsWindow(QDialog):
     hotkeys_page_entered = Signal()
     hotkeys_page_exited = Signal()
     test_asr_requested = Signal(object, str, str)
+    test_asr_mic_requested = Signal(object, str)
     test_llm_requested = Signal(object, str)
     clear_history_requested = Signal()
 
@@ -329,9 +330,19 @@ class SettingsWindow(QDialog):
         self.asr_headers.setMaximumWidth(400)
         self.asr_headers.textChanged.connect(lambda: self._validate_json_field(self.asr_headers))
         form.addRow("Custom headers (JSON)", self.asr_headers)
+        asr_test_row = QWidget()
+        asr_test_layout = QHBoxLayout(asr_test_row)
+        asr_test_layout.setContentsMargins(0, 0, 0, 0)
+        asr_test_layout.setSpacing(8)
+        self.asr_record_test_button = QPushButton("Record 3s to test")
+        self.asr_record_test_button.setObjectName("primary")
+        self.asr_record_test_button.clicked.connect(self._test_asr_mic)
         self.asr_test_button = QPushButton("Test with a WAV file")
         self.asr_test_button.clicked.connect(self._test_asr)
-        form.addRow("", self.asr_test_button)
+        asr_test_layout.addWidget(self.asr_record_test_button)
+        asr_test_layout.addWidget(self.asr_test_button)
+        asr_test_layout.addStretch()
+        form.addRow("", asr_test_row)
         return page
 
     def _validate_json_field(self, field: QPlainTextEdit) -> None:
@@ -414,6 +425,7 @@ class SettingsWindow(QDialog):
         form.addRow("Resolve demonstratives", self._check("llm.resolve_references"))
         form.addRow("Polish spoken language", self._check("llm.polish"))
         form.addRow("Preserve Chinese output", self._check("llm.preserve_chinese"))
+        form.addRow("Skip LLM when no references captured", self._check("llm.skip_without_references"))
         self.llm_headers = QPlainTextEdit(json.dumps(self._value("llm.custom_headers"), indent=2))
         self.llm_headers.setMaximumHeight(90)
         self.llm_headers.textChanged.connect(lambda: self._validate_json_field(self.llm_headers))
@@ -674,9 +686,22 @@ class SettingsWindow(QDialog):
             self, "Choose test audio", str(Path.home()), "WAV audio (*.wav)"
         )
         if path:
+            self.asr_record_test_button.setEnabled(False)
             self.asr_test_button.setEnabled(False)
             self.asr_test_button.setText(tr("Testing..."))
             self.test_asr_requested.emit(copy.deepcopy(self.values["asr"]), self.asr_key.text().strip(), path)
+
+    def _test_asr_mic(self) -> None:
+        valid, message = self._collect()
+        if not valid:
+            QMessageBox.warning(self, "Invalid settings", message)
+            return
+        self.asr_record_test_button.setEnabled(False)
+        self.asr_test_button.setEnabled(False)
+        self.asr_record_test_button.setText(tr("Recording 3s..."))
+        asr_config = copy.deepcopy(self.values["asr"])
+        asr_config.update(copy.deepcopy(self.values.get("advanced", {})))
+        self.test_asr_mic_requested.emit(asr_config, self.asr_key.text().strip())
 
     def _test_llm(self) -> None:
         valid, message = self._collect()
@@ -688,6 +713,8 @@ class SettingsWindow(QDialog):
         self.test_llm_requested.emit(copy.deepcopy(self.values["llm"]), self.llm_key.text().strip())
 
     def restore_test_buttons(self) -> None:
+        self.asr_record_test_button.setEnabled(True)
+        self.asr_record_test_button.setText(tr("Record 3s to test"))
         self.asr_test_button.setEnabled(True)
         self.asr_test_button.setText(tr("Test with a WAV file"))
         self.llm_test_button.setEnabled(True)

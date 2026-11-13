@@ -86,3 +86,31 @@ def test_session_store_crud_and_cleanup(tmp_path) -> None:
     assert store.get("abc")["finalPrompt"] == "task"
     store.delete("abc")
     assert store.get("abc") is None
+
+
+def test_session_store_search_matches_transcript_prompt_and_source_app(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.sqlite3")
+    store.save(
+        {
+            "id": "s1",
+            "createdAtMs": 1000,
+            "transcript": "合并这两个模块",
+            "finalPrompt": "把 GeoMoD-R 和 Stroke chunks 合并",
+            "sourceApp": "Code.exe",
+            "events": [],
+        }
+    )
+    store.save(
+        {
+            "id": "s2",
+            "createdAtMs": 2000,
+            "transcript": "排查 100% CPU 占用",
+            "finalPrompt": "检查 worker_loop 死循环",
+            "sourceApp": "WindowsTerminal.exe",
+            "events": [],
+        }
+    )
+    assert [row["id"] for row in store.search("GeoMoD-R")] == ["s1"]
+    assert [row["id"] for row in store.search("WindowsTerminal")] == ["s2"]
+    assert [row["id"] for row in store.search("100%")] == ["s2"]
+    assert [row["id"] for row in store.search("")] == ["s2", "s1"]

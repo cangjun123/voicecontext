@@ -201,9 +201,75 @@ def test_overlay_renders_anchors_and_clicks_result_to_edit(qtbot) -> None:
     assert overlay._hide_timer.interval() == 4000
     # Single click should NOT trigger edit anymore
     qtbot.mouseClick(overlay.frame, Qt.MouseButton.LeftButton)
-    # Double click should trigger edit
+    # Double click enters inline edit mode in-place
     with qtbot.waitSignal(overlay.edit_requested, timeout=1000):
         qtbot.mouseDClick(overlay.frame, Qt.MouseButton.LeftButton)
+    assert overlay._editing is True
+    assert overlay.editor.isHidden() is False
+    assert overlay.editor.toPlainText() == "Use A"
+
+    overlay.editor.setPlainText("Use A and B")
+    with qtbot.waitSignal(overlay.inline_save_requested, timeout=1000) as saved_spy:
+        qtbot.keyClick(
+            overlay.editor,
+            Qt.Key.Key_Return,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+    assert saved_spy.args == ["Use A and B"]
+    assert overlay._editing is False
+    assert overlay.isVisible() is False
+    assert bool(overlay.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus) is True
+
+
+def test_overlay_inline_edit_escape_cancels_and_composing_streams_live(qtbot) -> None:
+    set_language("en")
+    overlay = OverlayWindow({"completion_overlay_duration_ms": 4000})
+    qtbot.addWidget(overlay)
+    overlay.set_state("Composing", "Transcribing and preparing your prompt...")
+    overlay.set_composing_stream("Partial ")
+    overlay.set_composing_stream("Partial composed prompt")
+    assert overlay.transcript.text() == "Partial composed prompt"
+
+    overlay.show_completion("Original prompt", 0, "copied")
+    qtbot.mouseDClick(overlay.frame, Qt.MouseButton.LeftButton)
+    assert overlay._editing is True
+    overlay.editor.setPlainText("Unsaved change")
+    with qtbot.waitSignal(overlay.inline_cancelled, timeout=1000):
+        qtbot.keyClick(overlay.editor, Qt.Key.Key_Escape)
+    assert overlay._editing is False
+    assert overlay.isVisible() is False
+
+
+def test_main_window_history_search_filters_rows(qtbot) -> None:
+    set_language("en")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.set_history(
+        [
+            {
+                "id": "1",
+                "created_at_ms": 1700000000000,
+                "transcript": "fix login error",
+                "final_prompt": "Inspect auth/login.py",
+                "reference_count": 1,
+                "source_app": "Code.exe",
+            },
+            {
+                "id": "2",
+                "created_at_ms": 1700000060000,
+                "transcript": "optimize sql query",
+                "final_prompt": "Add index on sessions",
+                "reference_count": 0,
+                "source_app": "WindowsTerminal.exe",
+            },
+        ]
+    )
+    assert window.history_table.rowCount() == 2
+    window.history_search.setText("auth/login")
+    assert window.history_table.rowCount() == 1
+    assert window.history_table.item(0, 1).text() == "fix login error"
+    window.history_search.setText("")
+    assert window.history_table.rowCount() == 2
 
 
 def test_overlay_compose_failure_is_not_editable(qtbot) -> None:
@@ -237,8 +303,12 @@ def test_dragging_completion_overlay_does_not_open_editor(qtbot) -> None:
     assert observed == []
 
 
-def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
+def test_settings_contains_all_nine_pages(qtbot, tmp_path, monkeypatch) -> None:
     set_language("en")
+    monkeypatch.setattr(
+        "voice_context.ui.settings_window.HotkeyManager.availability",
+        staticmethod(lambda text: (True, "")),
+    )
     config = ConfigStore(tmp_path / "config.json")
     window = SettingsWindow(config, MemorySecrets())
     qtbot.addWidget(window)
@@ -256,6 +326,15 @@ def test_settings_contains_all_nine_pages(qtbot, tmp_path) -> None:
     bound_paths = {path for path, _, _ in window.bindings}
     assert "asr.model_path" not in bound_paths
     assert "asr.device" not in bound_paths
+    assert "llm.skip_without_references" in bound_paths
+    mic_spy = QSignalSpy(window.test_asr_mic_requested)
+    assert window.asr_record_test_button.text() == "Record 3s to test"
+    assert mic_spy.count() == 0
+    window.asr_record_test_button.click()
+    assert mic_spy.count() == 1
+    assert window.asr_record_test_button.text() == "Recording 3s..."
+    window.restore_test_buttons()
+    assert window.asr_record_test_button.text() == "Record 3s to test"
 
 
 def test_settings_export_and_import_round_trip(qtbot, tmp_path, monkeypatch) -> None:

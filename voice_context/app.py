@@ -20,6 +20,7 @@ from voice_context.asr import AliyunRealtimeASR, RealtimeRecognitionResult, crea
 from voice_context.core.composer import ComposeOptions, RuleComposer
 from voice_context.core.events import ReferenceEvent
 from voice_context.core.session import SessionState, VoiceSession
+from voice_context.core.templates import DEFAULT_TEMPLATES, render_template
 from voice_context.input.audio_capture import AudioCapture
 from voice_context.input.clipboard_watcher import ClipboardWatcher
 from voice_context.input.foreground import ForegroundInfo, activate_window, get_foreground_info
@@ -30,8 +31,8 @@ from voice_context.platform.startup import set_startup
 from voice_context.storage.config_store import APP_DIR, ConfigStore
 from voice_context.storage.secrets import SecretStore
 from voice_context.storage.session_store import SessionStore
-from voice_context.ui.main_window import MainWindow
 from voice_context.ui.i18n import set_language, tr
+from voice_context.ui.main_window import MainWindow
 from voice_context.ui.overlay import OverlayWindow
 from voice_context.ui.settings_window import SettingsWindow
 from voice_context.ui.theme import apply_theme
@@ -119,6 +120,8 @@ class SingleInstance(QObject):
 
 
 class VoiceContextController(QObject):
+    _compose_stream_updated = Signal(str, str)
+
     def __init__(self, app: QApplication, single_instance: SingleInstance) -> None:
         super().__init__()
         self.app = app
@@ -150,6 +153,7 @@ class VoiceContextController(QObject):
         self._finish_when_ready = False
         self._resume_inflight = False
         self._busy_notice_at = 0.0
+        self._inline_return_hwnd = 0
         self._settings_window: SettingsWindow | None = None
 
         apply_theme(app, str(self.config.get("general.theme", "system")))
@@ -189,6 +193,7 @@ class VoiceContextController(QObject):
             )
 
     def _connect_signals(self) -> None:
+        self._compose_stream_updated.connect(self._on_compose_stream_updated)
         self.main.start_requested.connect(self.start_session)
         self.main.finish_requested.connect(self.finish_session)
         self.main.pause_requested.connect(self.pause_resume)
@@ -202,7 +207,11 @@ class VoiceContextController(QObject):
         self.main.reference_update_requested.connect(self.update_reference)
         self.main.history_selected.connect(self._load_history_prompt)
         self.main.history_delete_requested.connect(self._delete_history)
-        self.overlay.edit_requested.connect(self._edit_prompt_from_overlay)
+        self.main.history_search_requested.connect(self._search_history)
+        self.overlay.edit_requested.connect(self._prepare_inline_overlay_edit)
+        self.overlay.inline_save_requested.connect(self._save_inline_overlay_edit)
+        self.overlay.workspace_requested.connect(self._open_workspace_from_overlay)
+        self.overlay.inline_cancelled.connect(self._restore_focus_after_inline_overlay)
 
         self.tray.start_requested.connect(self.start_session)
         self.tray.finish_requested.connect(self.finish_session)
@@ -314,14 +323,18 @@ class VoiceContextController(QObject):
         if use_realtime is None:
             use_realtime = self._uses_realtime_asr()
         try:
+            # Start local microphone buffering immediately so speech uttered right
+            # after pressing the hotkey is captured while the remote WebSocket connects.
+            audio = AudioCapture(audio_config)
+            audio.start()
             if use_realtime:
                 key = self.secrets.get(SecretStore.key_for("asr", "aliyun_realtime"))
                 engine = AliyunRealtimeASR(config, key)
                 engine.start()
-            audio = AudioCapture(audio_config)
-            if engine is not None:
-                audio.set_chunk_consumer(engine.send_audio)
-            audio.start()
+                if hasattr(audio, "flush_and_set_chunk_consumer"):
+                    audio.flush_and_set_chunk_consumer(engine.send_audio)
+                else:
+                    audio.set_chunk_consumer(engine.send_audio)
             target_thread = self.thread()
             audio.moveToThread(target_thread)
             if engine is not None:
@@ -930,10 +943,15 @@ class VoiceContextController(QObject):
         target = str(prompt_config.get("target", "codex_cli"))
         template = prompt_config.get("templates", {}).get(target, "")
         llm_config = self.config.section("llm")
-        direct_transcript = not session.references and bool(session.transcript.strip())
         llm_configured = bool(llm_config.get("enabled")) and llm_config.get(
             "provider"
         ) not in {"rules", "disabled"}
+        skip_without_refs = bool(llm_config.get("skip_without_references", True))
+        direct_transcript = (
+            not session.references
+            and bool(session.transcript.strip())
+            and (not llm_configured or skip_without_refs)
+        )
         if not session.references and not session.transcript.strip():
             # Nothing was spoken or copied: rewriting cannot add anything, so fail
             # with a clear reason instead of sending an empty request to the LLM.
@@ -983,6 +1001,33 @@ class VoiceContextController(QObject):
             if use_llm:
                 key = self.secrets.get(SecretStore.key_for("llm", provider))
                 client = LLMComposerClient(llm_config, key)
+                session_id = session.id
+                preview_template = template or DEFAULT_TEMPLATES.get(
+                    target, DEFAULT_TEMPLATES["generic_markdown"]
+                )
+                references_snapshot = list(session.references)
+                references_md = self.composer.references_markdown(references_snapshot)
+                transcript_snapshot = session.transcript
+                source_app_snapshot = session.source_app
+
+                def emit_stream_preview(partial_task: str) -> None:
+                    materialized = self.composer.materialize_references(
+                        partial_task, references_snapshot
+                    )
+                    preview = render_template(
+                        preview_template,
+                        {
+                            "task": materialized,
+                            "references": references_md,
+                            "transcript": transcript_snapshot,
+                            "timestamp": "",
+                            "source_app": source_app_snapshot,
+                        },
+                    )
+                    if preview:
+                        self._compose_stream_updated.emit(session_id, preview)
+
+                client.on_stream = emit_stream_preview
             started = time.perf_counter()
             try:
                 prompt = self.composer.compose(session, options, client)
@@ -1018,6 +1063,16 @@ class VoiceContextController(QObject):
             return PromptComposeResult(prompt, warning, metadata)
 
         self._submit(compose, self._compose_done, self._fail_session)
+
+    def _on_compose_stream_updated(self, session_id: str, preview: str) -> None:
+        if (
+            not self._session
+            or self._session.id != session_id
+            or self._session.state != SessionState.COMPOSING
+        ):
+            return
+        self.overlay.set_composing_stream(preview)
+        self.main.update_prompt(preview)
 
     def _compose_done(self, result: PromptComposeResult) -> None:
         if not self._session or self._session.state != SessionState.COMPOSING:
@@ -1364,12 +1419,41 @@ class VoiceContextController(QObject):
                 else:
                     self.overlay.set_state(state, "Ready")
 
-    def _edit_prompt_from_overlay(self) -> None:
+    def _prepare_inline_overlay_edit(self) -> None:
+        fg = get_foreground_info()
+        if fg.hwnd and fg.pid != os.getpid():
+            self._inline_return_hwnd = fg.hwnd
+        elif self._target_window.hwnd and self._target_window.pid != os.getpid():
+            self._inline_return_hwnd = self._target_window.hwnd
+        else:
+            self._inline_return_hwnd = 0
+
+    def _restore_focus_after_inline_overlay(self) -> None:
+        hwnd, self._inline_return_hwnd = self._inline_return_hwnd, 0
+        if hwnd:
+            activate_window(hwnd)
+
+    def _save_inline_overlay_edit(self, text: str) -> None:
+        self.overlay.finish_inline_edit()
+        self._restore_focus_after_inline_overlay()
+        if not text.strip():
+            return
+        if self._session and self._session.state == SessionState.PROMPT_READY:
+            self.main.update_prompt(text)
+        self.copy_prompt(text, quiet=True)
+
+    def _open_workspace_from_overlay(self, draft_text: str = "") -> None:
+        self._inline_return_hwnd = 0
         if not self._session or self._session.state != SessionState.PROMPT_READY:
             return
         self.main.set_session(self._session)
+        if draft_text.strip():
+            self.main.update_prompt(draft_text)
         self.main.set_completion_receipt(self._session)
         self.main.focus_prompt_editor()
+
+    def _edit_prompt_from_overlay(self) -> None:
+        self._open_workspace_from_overlay()
 
     def show_main(self) -> None:
         self.main.show_normal()
@@ -1388,6 +1472,7 @@ class VoiceContextController(QObject):
         window.saved.connect(self._settings_saved)
         window.clear_history_requested.connect(self._clear_history)
         window.test_asr_requested.connect(self._test_asr)
+        window.test_asr_mic_requested.connect(self._test_asr_mic)
         window.test_llm_requested.connect(self._test_llm)
         window.hotkeys_page_entered.connect(self.hotkeys.suspend)
         window.hotkeys_page_exited.connect(self.hotkeys.resume)
@@ -1421,6 +1506,65 @@ class VoiceContextController(QObject):
 
         self._submit(task, on_success, on_error)
 
+    def _test_asr_mic(self, config: dict, key: str, duration_s: float = 3.0) -> None:
+        window = self._settings_window or self.main
+        if self.active:
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.warning(
+                window,
+                tr("VoiceContext warning"),
+                tr("Finish or cancel the active voice session before testing the microphone."),
+            )
+            return
+
+        def task() -> str:
+            audio = AudioCapture(config)
+            if config.get("provider") == "aliyun_realtime":
+                engine: AliyunRealtimeASR | None = None
+                try:
+                    audio.start()
+                    engine = AliyunRealtimeASR(config, key)
+                    engine.start()
+                    if hasattr(audio, "flush_and_set_chunk_consumer"):
+                        audio.flush_and_set_chunk_consumer(engine.send_audio)
+                    else:
+                        audio.set_chunk_consumer(engine.send_audio)
+                    time.sleep(duration_s)
+                    audio.discard()
+                    return engine.stop().text
+                except Exception:
+                    audio.discard()
+                    if engine is not None:
+                        self._quiet_stop_realtime(engine)
+                    raise
+            path: Path | None = None
+            try:
+                audio.start()
+                time.sleep(duration_s)
+                path = audio.stop()
+                return create_asr_engine(config, key).transcribe(path).text
+            finally:
+                audio.discard()
+                if path is not None:
+                    path.unlink(missing_ok=True)
+
+        def on_success(text: str) -> None:
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.information(
+                window,
+                "ASR test succeeded",
+                text or "The request succeeded but returned no speech.",
+            )
+
+        def on_error(error: str) -> None:
+            if self._settings_window:
+                self._settings_window.restore_test_buttons()
+            QMessageBox.critical(window, "ASR test failed", error)
+
+        self._submit(task, on_success, on_error)
+
     def _test_llm(self, config: dict, key: str) -> None:
         window = self._settings_window or self.main
 
@@ -1443,6 +1587,15 @@ class VoiceContextController(QObject):
 
     def _refresh_history(self) -> None:
         self.main.set_history(self.history.recent(100))
+        query = self.main.history_search.text().strip()
+        if query:
+            self.main.set_filtered_history(self.history.search(query, 100))
+
+    def _search_history(self, query: str) -> None:
+        if query.strip():
+            self.main.set_filtered_history(self.history.search(query, 100))
+        else:
+            self.main.set_filtered_history(self.history.recent(100))
 
     def _load_history_prompt(self, session_id: str) -> None:
         data = self.history.get(session_id)

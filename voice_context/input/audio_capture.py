@@ -40,6 +40,8 @@ class AudioCapture(QObject):
         self._silent_since: float | None = None
         self._silence_emitted = False
         self._chunk_consumer: Callable[[bytes], None] | None = None
+        self._flushing_chunks: list[bytes] | None = None
+        self._discarded = False
 
     @property
     def is_recording(self) -> bool:
@@ -58,6 +60,8 @@ class AudioCapture(QObject):
             raise RuntimeError("sounddevice is not installed. Run: pip install sounddevice")
         with self._lock:
             self._frames.clear()
+            self._flushing_chunks = None
+            self._discarded = False
         self._started_at = time.monotonic()
         self._silent_since = None
         self._silence_emitted = False
@@ -126,13 +130,20 @@ class AudioCapture(QObject):
         if status:
             self.error.emit(str(status))
         raw = self._resample(bytes(indata))
-        with self._lock:
-            self._frames.append(raw)
         if not raw:
             return
-        if self._chunk_consumer is not None:
+        consumer: Callable[[bytes], None] | None = None
+        with self._lock:
+            if self._discarded:
+                return
+            self._frames.append(raw)
+            if self._flushing_chunks is not None:
+                self._flushing_chunks.append(raw)
+            else:
+                consumer = self._chunk_consumer
+        if consumer is not None:
             try:
-                self._chunk_consumer(raw)
+                consumer(raw)
             except Exception as exc:
                 self.error.emit(f"Realtime audio delivery failed: {exc}")
         samples = memoryview(raw).cast("h")
@@ -165,7 +176,40 @@ class AudioCapture(QObject):
                 stream.close()
 
     def set_chunk_consumer(self, consumer: Callable[[bytes], None] | None) -> None:
-        self._chunk_consumer = consumer
+        with self._lock:
+            self._flushing_chunks = None
+            self._chunk_consumer = consumer
+
+    def flush_and_set_chunk_consumer(self, consumer: Callable[[bytes], None]) -> None:
+        """Deliver pre-buffered PCM frames in order before switching to live streaming."""
+        with self._lock:
+            if self._discarded:
+                return
+            backlog = list(self._frames)
+            self._flushing_chunks = []
+            self._chunk_consumer = None
+        try:
+            while True:
+                for chunk in backlog:
+                    with self._lock:
+                        if self._discarded:
+                            self._flushing_chunks = None
+                            return
+                    consumer(chunk)
+                with self._lock:
+                    if self._discarded:
+                        self._flushing_chunks = None
+                        return
+                    if not self._flushing_chunks:
+                        self._flushing_chunks = None
+                        self._chunk_consumer = consumer
+                        return
+                    backlog = self._flushing_chunks
+                    self._flushing_chunks = []
+        except Exception:
+            with self._lock:
+                self._flushing_chunks = None
+            raise
 
     def snapshot(self, output_path: Path | None = None) -> Path:
         if output_path is None:
@@ -184,14 +228,18 @@ class AudioCapture(QObject):
         return path
 
     def discard(self) -> None:
+        with self._lock:
+            self._discarded = True
+            self._chunk_consumer = None
+            self._flushing_chunks = None
         if self.is_recording:
             try:
                 self.stop_stream()
             except Exception:
                 pass
-        self._chunk_consumer = None
         with self._lock:
             self._frames.clear()
+            self._flushing_chunks = None
 
     @staticmethod
     def devices() -> list[dict[str, Any]]:

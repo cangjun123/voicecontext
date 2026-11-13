@@ -97,3 +97,29 @@ def test_native_rate_fallback_streams_16khz_pcm(monkeypatch) -> None:
     assert result.tolist() == list(range(0, 4800, 3))
     assert capture.duration_ms == 100
     capture.stop_stream()
+
+
+def test_audio_prebuffer_flushes_in_order_without_dropping_concurrent_chunks() -> None:
+    capture = AudioCapture({"sample_rate": 16000, "vad": False})
+    chunk1 = b"\x01\x00" * 800
+    chunk2 = b"\x02\x00" * 800
+    chunk3 = b"\x03\x00" * 800
+    chunk4 = b"\x04\x00" * 800
+
+    # Recorded before remote WebSocket finishes connecting
+    capture._callback(chunk1, 800, None, None)
+    capture._callback(chunk2, 800, None, None)
+
+    delivered: list[bytes] = []
+
+    def slow_consumer(data: bytes) -> None:
+        delivered.append(data)
+        # Simulate PortAudio delivering chunk3 mid-flush while chunk1 is being sent
+        if data == chunk1:
+            capture._callback(chunk3, 800, None, None)
+
+    capture.flush_and_set_chunk_consumer(slow_consumer)
+    # Subsequent live chunk goes straight to consumer
+    capture._callback(chunk4, 800, None, None)
+
+    assert delivered == [chunk1, chunk2, chunk3, chunk4]

@@ -73,6 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "resolve_references": True,
         "polish": True,
         "preserve_chinese": True,
+        "skip_without_references": True,
         "custom_headers": {},
     },
     "prompt": {
